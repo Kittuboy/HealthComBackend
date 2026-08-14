@@ -1,6 +1,46 @@
 const nodemailer = require("nodemailer");
 
+// =========================================================
+// ENVIRONMENT CONFIGURATION
+// =========================================================
 
+const BREVO_SMTP_USER = process.env.BREVO_SMTP_USER;
+const BREVO_SMTP_KEY = process.env.BREVO_SMTP_KEY;
+const EMAIL_FROM = process.env.EMAIL_FROM;
+
+// =========================================================
+// VALIDATE EMAIL CONFIGURATION
+// =========================================================
+
+function validateEmailConfig() {
+  const missing = [];
+
+  if (!BREVO_SMTP_USER) {
+    missing.push("BREVO_SMTP_USER");
+  }
+
+  if (!BREVO_SMTP_KEY) {
+    missing.push("BREVO_SMTP_KEY");
+  }
+
+  if (!EMAIL_FROM) {
+    missing.push("EMAIL_FROM");
+  }
+
+  if (missing.length > 0) {
+    console.error("==============================================");
+    console.error("❌ BREVO EMAIL CONFIGURATION ERROR");
+    console.error("Missing environment variables:");
+    console.error(missing.join(", "));
+    console.error("==============================================");
+
+    return false;
+  }
+
+  return true;
+}
+
+const emailConfigValid = validateEmailConfig();
 
 // =========================================================
 // BREVO SMTP TRANSPORTER
@@ -12,31 +52,142 @@ const transporter = nodemailer.createTransport({
   secure: false,
 
   auth: {
-    user: process.env.BREVO_SMTP_USER,
-    pass: process.env.BREVO_SMTP_KEY,
+    user: BREVO_SMTP_USER,
+    pass: BREVO_SMTP_KEY,
   },
 
   connectionTimeout: 10000,
   greetingTimeout: 10000,
   socketTimeout: 20000,
+
+  pool: true,
+  maxConnections: 5,
+  maxMessages: 100,
 });
 
 // =========================================================
-// VERIFY EMAIL CONFIGURATION
+// VERIFY BREVO SMTP CONNECTION
 // =========================================================
 
-transporter.verify((error, success) => {
-  if (error) {
-    console.error("========== BREVO SMTP ERROR ==========");
-    console.error(error);
-    console.error("======================================");
-    return;
+if (emailConfigValid) {
+  transporter.verify((error, success) => {
+    if (error) {
+      console.error("==============================================");
+      console.error("❌ BREVO SMTP CONNECTION FAILED");
+      console.error(error.message || error);
+      console.error("==============================================");
+      return;
+    }
+
+    console.log("==============================================");
+    console.log("✅ BREVO SMTP CONNECTED SUCCESSFULLY");
+    console.log(`📧 SMTP User: ${BREVO_SMTP_USER}`);
+    console.log(`📨 From Email: ${EMAIL_FROM}`);
+    console.log("==============================================");
+  });
+}
+
+// =========================================================
+// HTML ESCAPE
+// =========================================================
+
+function escapeHtml(value) {
+  if (value === null || value === undefined) {
+    return "";
   }
 
-  console.log("========== BREVO SMTP CONNECTED ==========");
-  console.log(success);
-  console.log("==========================================");
-});
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+// =========================================================
+// SAFE VALUE
+// =========================================================
+
+function safeValue(value, fallback = "Not provided") {
+  if (
+    value === null ||
+    value === undefined ||
+    String(value).trim() === ""
+  ) {
+    return fallback;
+  }
+
+  return escapeHtml(value);
+}
+
+// =========================================================
+// FORMAT DATE
+// =========================================================
+
+function formatDate(date) {
+  if (!date) {
+    return "Not provided";
+  }
+
+  try {
+    return new Date(date).toLocaleDateString("en-IN");
+  } catch (error) {
+    return String(date);
+  }
+}
+
+// =========================================================
+// COMMON MAIL SENDER
+// =========================================================
+
+async function sendEmail({
+  to,
+  subject,
+  text,
+  html,
+}) {
+  if (!emailConfigValid) {
+    throw new Error(
+      "Email service is not configured. Check BREVO_SMTP_USER, BREVO_SMTP_KEY and EMAIL_FROM."
+    );
+  }
+
+  if (!to) {
+    throw new Error("Recipient email address is required.");
+  }
+
+  if (!subject) {
+    throw new Error("Email subject is required.");
+  }
+
+  try {
+    const info = await transporter.sendMail({
+      from: `"HealthCom" <${EMAIL_FROM}>`,
+      to,
+      subject,
+      text,
+      html,
+    });
+
+    console.log("==============================================");
+    console.log("✅ EMAIL SENT SUCCESSFULLY");
+    console.log(`📧 To: ${to}`);
+    console.log(`📌 Subject: ${subject}`);
+    console.log(`🆔 Message ID: ${info.messageId}`);
+    console.log("==============================================");
+
+    return info;
+  } catch (error) {
+    console.error("==============================================");
+    console.error("❌ EMAIL SENDING FAILED");
+    console.error(`📧 To: ${to}`);
+    console.error(`📌 Subject: ${subject}`);
+    console.error(`❌ Error: ${error.message}`);
+    console.error("==============================================");
+
+    throw error;
+  }
+}
 
 // =========================================================
 // VERIFICATION OTP
@@ -47,12 +198,15 @@ async function sendVerificationOtp({
   firstName,
   otp,
 }) {
-  const mailOptions = {
-    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
+  const name = safeValue(firstName, "User");
+  const safeOtp = safeValue(otp);
+
+  return sendEmail({
     to: email,
+
     subject: "Verify your HealthCom account",
 
-    text: `Hello ${firstName},
+    text: `Hello ${firstName || "User"},
 
 Your HealthCom verification OTP is: ${otp}
 
@@ -61,49 +215,133 @@ This OTP expires in 5 minutes.
 If you did not create this account, please ignore this email.`,
 
     html: `
-      <main
-        style="
-          font-family: Arial, sans-serif;
-          max-width: 600px;
-          margin: auto;
-          padding: 32px;
-          color: #333;
-        "
-      >
-        <h1 style="color: #0878d1;">
-          HealthCom
-        </h1>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Verify HealthCom Account</title>
+</head>
 
-        <p>
-          Hello ${firstName},
-        </p>
+<body style="
+margin:0;
+padding:0;
+background:#f3f7fb;
+font-family:Arial,Helvetica,sans-serif;
+color:#1f2937;
+">
 
-        <p>
-          Your email verification OTP is:
-        </p>
+<div style="
+max-width:600px;
+margin:40px auto;
+background:#ffffff;
+border:1px solid #e5e7eb;
+border-radius:16px;
+overflow:hidden;
+">
 
-        <h2
-          style="
-            color: #0878d1;
-            letter-spacing: 8px;
-          "
-        >
-          ${otp}
-        </h2>
+<div style="
+background:#0878d1;
+padding:28px;
+color:#ffffff;
+">
 
-        <p>
-          This OTP expires in 5 minutes.
-        </p>
+<h1 style="margin:0;font-size:25px;">
+HealthCom
+</h1>
 
-        <p>
-          If you did not create this account,
-          please ignore this email.
-        </p>
-      </main>
-    `,
-  };
+<p style="
+margin:8px 0 0;
+font-size:14px;
+opacity:.9;
+">
+Email Verification
+</p>
 
-  await transporter.sendMail(mailOptions);
+</div>
+
+<div style="padding:32px;">
+
+<p style="font-size:16px;">
+Hello ${name},
+</p>
+
+<p style="
+color:#4b5563;
+line-height:1.7;
+">
+Thank you for creating your HealthCom account.
+Please use the OTP below to verify your email address.
+</p>
+
+<div style="
+margin:28px 0;
+padding:22px;
+background:#f0f7ff;
+border:1px solid #dbeafe;
+border-radius:12px;
+text-align:center;
+">
+
+<div style="
+font-size:12px;
+color:#64748b;
+font-weight:bold;
+text-transform:uppercase;
+letter-spacing:1px;
+">
+Verification OTP
+</div>
+
+<div style="
+margin-top:12px;
+font-size:32px;
+font-weight:bold;
+letter-spacing:8px;
+color:#0878d1;
+">
+${safeOtp}
+</div>
+
+</div>
+
+<p style="
+font-size:14px;
+color:#64748b;
+line-height:1.6;
+">
+This OTP will expire in <strong>5 minutes</strong>.
+</p>
+
+<p style="
+font-size:13px;
+color:#94a3b8;
+line-height:1.6;
+">
+If you did not create this account, please ignore this email.
+</p>
+
+</div>
+
+<div style="
+padding:20px;
+background:#f8fafc;
+border-top:1px solid #edf1f5;
+text-align:center;
+font-size:12px;
+color:#94a3b8;
+">
+
+© ${new Date().getFullYear()} HealthCom. All rights reserved.
+
+</div>
+
+</div>
+
+</body>
+</html>
+`,
+  });
 }
 
 // =========================================================
@@ -115,12 +353,15 @@ async function sendLoginOtp({
   firstName,
   otp,
 }) {
-  const mailOptions = {
-    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
+  const name = safeValue(firstName, "User");
+  const safeOtp = safeValue(otp);
+
+  return sendEmail({
     to: email,
+
     subject: "HealthCom Login OTP",
 
-    text: `Hello ${firstName},
+    text: `Hello ${firstName || "User"},
 
 Your HealthCom login OTP is: ${otp}
 
@@ -129,49 +370,121 @@ This OTP expires in 5 minutes.
 If you did not request this login, please ignore this email.`,
 
     html: `
-      <div
-        style="
-          font-family: Arial, sans-serif;
-          max-width: 600px;
-          margin: auto;
-          padding: 30px;
-          color: #333;
-        "
-      >
-        <h2 style="color: #0878d1;">
-          HealthCom Login Verification
-        </h2>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>HealthCom Login OTP</title>
+</head>
 
-        <p>
-          Hello ${firstName},
-        </p>
+<body style="
+margin:0;
+padding:0;
+background:#f3f7fb;
+font-family:Arial,Helvetica,sans-serif;
+">
 
-        <p>
-          Your Login OTP is:
-        </p>
+<div style="
+max-width:600px;
+margin:40px auto;
+background:#ffffff;
+border:1px solid #e5e7eb;
+border-radius:16px;
+overflow:hidden;
+">
 
-        <h1
-          style="
-            letter-spacing: 8px;
-            color: #0878d1;
-          "
-        >
-          ${otp}
-        </h1>
+<div style="
+background:#0878d1;
+padding:28px;
+color:#ffffff;
+">
 
-        <p>
-          OTP expires in 5 minutes.
-        </p>
+<h1 style="margin:0;">
+HealthCom
+</h1>
 
-        <p>
-          If you did not request this login,
-          please ignore this email.
-        </p>
-      </div>
-    `,
-  };
+<p style="margin:8px 0 0;">
+Login Verification
+</p>
 
-  await transporter.sendMail(mailOptions);
+</div>
+
+<div style="padding:32px;">
+
+<p>Hello ${name},</p>
+
+<p style="
+color:#4b5563;
+line-height:1.7;
+">
+Someone is attempting to log in to your HealthCom account.
+Use the OTP below to continue.
+</p>
+
+<div style="
+margin:28px 0;
+padding:22px;
+background:#f0f7ff;
+border:1px solid #dbeafe;
+border-radius:12px;
+text-align:center;
+">
+
+<div style="
+font-size:12px;
+color:#64748b;
+font-weight:bold;
+">
+LOGIN OTP
+</div>
+
+<div style="
+margin-top:12px;
+font-size:32px;
+font-weight:bold;
+letter-spacing:8px;
+color:#0878d1;
+">
+${safeOtp}
+</div>
+
+</div>
+
+<p style="
+font-size:14px;
+color:#64748b;
+">
+This OTP expires in <strong>5 minutes</strong>.
+</p>
+
+<p style="
+font-size:13px;
+color:#94a3b8;
+">
+If you did not request this login, please ignore this email.
+</p>
+
+</div>
+
+<div style="
+padding:20px;
+background:#f8fafc;
+text-align:center;
+font-size:12px;
+color:#94a3b8;
+">
+
+© ${new Date().getFullYear()} HealthCom
+
+</div>
+
+</div>
+
+</body>
+</html>
+`,
+  });
 }
 
 // =========================================================
@@ -183,12 +496,15 @@ async function sendPasswordResetOtp({
   firstName,
   otp,
 }) {
-  const mailOptions = {
-    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
+  const name = safeValue(firstName, "User");
+  const safeOtp = safeValue(otp);
+
+  return sendEmail({
     to: email,
+
     subject: "HealthCom Password Reset OTP",
 
-    text: `Hello ${firstName},
+    text: `Hello ${firstName || "User"},
 
 Your HealthCom password reset OTP is: ${otp}
 
@@ -197,50 +513,122 @@ This OTP expires in 5 minutes.
 If you did not request a password reset, please ignore this email.`,
 
     html: `
-      <div
-        style="
-          font-family: Arial, sans-serif;
-          max-width: 600px;
-          margin: auto;
-          padding: 30px;
-          color: #333;
-        "
-      >
-        <h2 style="color: #0878d1;">
-          HealthCom Password Reset
-        </h2>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>HealthCom Password Reset</title>
+</head>
 
-        <p>
-          Hello ${firstName},
-        </p>
+<body style="
+margin:0;
+padding:0;
+background:#f3f7fb;
+font-family:Arial,Helvetica,sans-serif;
+">
 
-        <p>
-          Your password reset OTP is:
-        </p>
+<div style="
+max-width:600px;
+margin:40px auto;
+background:#ffffff;
+border:1px solid #e5e7eb;
+border-radius:16px;
+overflow:hidden;
+">
 
-        <h1
-          style="
-            letter-spacing: 8px;
-            color: #0878d1;
-          "
-        >
-          ${otp}
-        </h1>
+<div style="
+background:#0878d1;
+padding:28px;
+color:#ffffff;
+">
 
-        <p>
-          OTP expires in 5 minutes.
-        </p>
+<h1 style="margin:0;">
+HealthCom
+</h1>
 
-        <p>
-          If you did not request a password reset,
-          please ignore this email.
-        </p>
-      </div>
-    `,
-  };
+<p style="margin:8px 0 0;">
+Password Reset
+</p>
 
-  await transporter.sendMail(mailOptions);
-};
+</div>
+
+<div style="padding:32px;">
+
+<p>Hello ${name},</p>
+
+<p style="
+color:#4b5563;
+line-height:1.7;
+">
+We received a request to reset your HealthCom account password.
+Use the OTP below to continue.
+</p>
+
+<div style="
+margin:28px 0;
+padding:22px;
+background:#f0f7ff;
+border:1px solid #dbeafe;
+border-radius:12px;
+text-align:center;
+">
+
+<div style="
+font-size:12px;
+color:#64748b;
+font-weight:bold;
+">
+PASSWORD RESET OTP
+</div>
+
+<div style="
+margin-top:12px;
+font-size:32px;
+font-weight:bold;
+letter-spacing:8px;
+color:#0878d1;
+">
+${safeOtp}
+</div>
+
+</div>
+
+<p style="
+font-size:14px;
+color:#64748b;
+">
+This OTP expires in <strong>5 minutes</strong>.
+</p>
+
+<p style="
+font-size:13px;
+color:#94a3b8;
+">
+If you did not request a password reset, please ignore this email.
+</p>
+
+</div>
+
+<div style="
+padding:20px;
+background:#f8fafc;
+text-align:center;
+font-size:12px;
+color:#94a3b8;
+">
+
+© ${new Date().getFullYear()} HealthCom
+
+</div>
+
+</div>
+
+</body>
+</html>
+`,
+  });
+}
 
 // =========================================================
 // PATIENT APPOINTMENT REQUEST EMAIL
@@ -254,14 +642,18 @@ async function sendPatientAppointmentEmail({
   appointmentDate,
   appointmentTime,
 }) {
-  const mailOptions = {
-    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
+  const name = safeValue(firstName, "Patient");
+  const doctor = safeValue(doctorName);
+  const specialization = safeValue(specialty);
+  const date = safeValue(appointmentDate);
+  const time = safeValue(appointmentTime);
+
+  return sendEmail({
     to: email,
 
-    subject:
-      "HealthCom - Appointment Request Received",
+    subject: "HealthCom - Appointment Request Received",
 
-    text: `Hello ${firstName},
+    text: `Hello ${firstName || "Patient"},
 
 Your appointment request with ${doctorName} has been submitted successfully.
 
@@ -277,311 +669,221 @@ You will receive another email when the doctor accepts or rejects the request.
 Thank you for choosing HealthCom.`,
 
     html: `
-      <!DOCTYPE html>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Appointment Request Received</title>
+</head>
 
-      <html>
+<body style="
+margin:0;
+padding:0;
+background:#f3f7fb;
+font-family:Arial,Helvetica,sans-serif;
+color:#1f2937;
+">
 
-      <head>
+<div style="padding:32px 14px;">
 
-        <meta charset="UTF-8" />
+<div style="
+max-width:620px;
+margin:auto;
+background:#ffffff;
+border:1px solid #e5eaf1;
+border-radius:18px;
+overflow:hidden;
+">
 
-        <meta
-          name="viewport"
-          content="width=device-width, initial-scale=1.0"
-        />
+<div style="
+background:#0878d1;
+padding:30px;
+color:#ffffff;
+">
 
-        <title>
-          Appointment Request Received
-        </title>
+<div style="
+font-size:13px;
+letter-spacing:1.5px;
+text-transform:uppercase;
+font-weight:700;
+">
+HealthCom
+</div>
 
-      </head>
+<h1 style="
+margin:8px 0 0;
+font-size:26px;
+">
+Appointment Request Received
+</h1>
 
-      <body
-        style="
-          margin:0;
-          padding:0;
-          background:#f3f7fb;
-          font-family:Arial,Helvetica,sans-serif;
-          color:#1f2937;
-        "
-      >
+</div>
 
-        <div
-          style="
-            width:100%;
-            padding:32px 14px;
-            box-sizing:border-box;
-          "
-        >
+<div style="padding:30px;">
 
-          <div
-            style="
-              max-width:620px;
-              margin:0 auto;
-              background:#ffffff;
-              border:1px solid #e5eaf1;
-              border-radius:18px;
-              overflow:hidden;
-              box-shadow:0 8px 30px rgba(15,23,42,0.07);
-            "
-          >
+<div style="
+display:inline-block;
+padding:9px 14px;
+background:#fff7ed;
+color:#c2410c;
+border:1px solid #fed7aa;
+border-radius:999px;
+font-size:13px;
+font-weight:700;
+">
+● Request Pending
+</div>
 
-            <!-- HEADER -->
+<p style="margin:24px 0 10px;font-size:16px;">
+Hello ${name},
+</p>
 
-            <div
-              style="
-                background:linear-gradient(
-                  135deg,
-                  #0878d1,
-                  #0b5cad
-                );
-                padding:30px;
-                color:#ffffff;
-              "
-            >
+<p style="
+margin:0;
+color:#4b5563;
+font-size:15px;
+line-height:1.7;
+">
+Your appointment request has been sent successfully.
+The doctor will review your request and you will receive
+another notification once a decision is made.
+</p>
 
-              <div
-                style="
-                  font-size:13px;
-                  letter-spacing:1.5px;
-                  text-transform:uppercase;
-                  opacity:.85;
-                  font-weight:700;
-                "
-              >
-                HealthCom
-              </div>
+<div style="
+margin:24px 0;
+padding:22px;
+background:#f8fbff;
+border:1px solid #e1edf9;
+border-radius:14px;
+">
 
-              <h1
-                style="
-                  margin:8px 0 0;
-                  font-size:26px;
-                  line-height:1.25;
-                "
-              >
-                Appointment Request Received
-              </h1>
+<div style="
+font-size:13px;
+color:#6b7280;
+font-weight:700;
+text-transform:uppercase;
+letter-spacing:.6px;
+margin-bottom:16px;
+">
+Appointment Details
+</div>
 
-            </div>
+<table width="100%" cellpadding="0" cellspacing="0">
 
-            <!-- CONTENT -->
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Doctor
+</td>
 
-            <div style="padding:30px;">
+<td style="
+padding:10px 0;
+text-align:right;
+font-weight:bold;
+">
+${doctor}
+</td>
+</tr>
 
-              <div
-                style="
-                  display:inline-block;
-                  padding:9px 14px;
-                  background:#fff7ed;
-                  color:#c2410c;
-                  border:1px solid #fed7aa;
-                  border-radius:999px;
-                  font-size:13px;
-                  font-weight:700;
-                "
-              >
-                ● Request Pending
-              </div>
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Specialization
+</td>
 
-              <p
-                style="
-                  margin:24px 0 10px;
-                  font-size:16px;
-                "
-              >
-                Hello ${firstName || "Patient"},
-              </p>
+<td style="
+padding:10px 0;
+text-align:right;
+font-weight:bold;
+">
+${specialization}
+</td>
+</tr>
 
-              <p
-                style="
-                  margin:0;
-                  color:#4b5563;
-                  font-size:15px;
-                  line-height:1.7;
-                "
-              >
-                Your appointment request has been
-                sent successfully. The doctor will
-                review your request and you will
-                receive a separate notification once
-                a decision is made.
-              </p>
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Date
+</td>
 
-              <!-- APPOINTMENT DETAILS -->
+<td style="
+padding:10px 0;
+text-align:right;
+font-weight:bold;
+">
+${date}
+</td>
+</tr>
 
-              <div
-                style="
-                  margin:24px 0;
-                  padding:22px;
-                  background:#f8fbff;
-                  border:1px solid #e1edf9;
-                  border-radius:14px;
-                "
-              >
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Time
+</td>
 
-                <div
-                  style="
-                    font-size:13px;
-                    color:#6b7280;
-                    font-weight:700;
-                    text-transform:uppercase;
-                    letter-spacing:.6px;
-                    margin-bottom:16px;
-                  "
-                >
-                  Appointment Details
-                </div>
+<td style="
+padding:10px 0;
+text-align:right;
+font-weight:bold;
+">
+${time}
+</td>
+</tr>
 
-                <div
-                  style="
-                    padding:11px 0;
-                    border-bottom:1px solid #e8eef5;
-                  "
-                >
-                  <span style="color:#6b7280;">
-                    Doctor
-                  </span>
+</table>
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${doctorName}
-                  </strong>
-                </div>
+</div>
 
-                <div
-                  style="
-                    padding:11px 0;
-                    border-bottom:1px solid #e8eef5;
-                  "
-                >
-                  <span style="color:#6b7280;">
-                    Specialization
-                  </span>
+<div style="
+padding:15px 17px;
+background:#f0fdf4;
+border:1px solid #bbf7d0;
+border-radius:12px;
+color:#166534;
+font-size:14px;
+line-height:1.6;
+">
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${specialty}
-                  </strong>
-                </div>
+<strong>What happens next?</strong>
 
-                <div
-                  style="
-                    padding:11px 0;
-                    border-bottom:1px solid #e8eef5;
-                  "
-                >
-                  <span style="color:#6b7280;">
-                    Date
-                  </span>
+<br><br>
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${appointmentDate}
-                  </strong>
-                </div>
+Your request is waiting for doctor approval.
+Please check your HealthCom account for the latest appointment status.
 
-                <div
-                  style="
-                    padding:11px 0;
-                  "
-                >
-                  <span style="color:#6b7280;">
-                    Time
-                  </span>
+</div>
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${appointmentTime}
-                  </strong>
-                </div>
+<p style="
+margin:25px 0 0;
+color:#6b7280;
+font-size:13px;
+">
+Thank you for choosing
+<strong style="color:#0878d1;">
+HealthCom
+</strong>.
+</p>
 
-              </div>
+</div>
 
-              <!-- NEXT STEP -->
+<div style="
+padding:20px 30px;
+background:#f8fafc;
+border-top:1px solid #edf1f5;
+text-align:center;
+color:#9ca3af;
+font-size:12px;
+">
 
-              <div
-                style="
-                  padding:15px 17px;
-                  background:#f0fdf4;
-                  border:1px solid #bbf7d0;
-                  border-radius:12px;
-                  color:#166534;
-                  font-size:14px;
-                  line-height:1.6;
-                "
-              >
+© ${new Date().getFullYear()} HealthCom. All rights reserved.
 
-                <strong>
-                  What happens next?
-                </strong>
+</div>
 
-                <br />
+</div>
 
-                Your request is waiting for doctor
-                approval. Please check your HealthCom
-                account for the latest appointment status.
+</div>
 
-              </div>
-
-              <p
-                style="
-                  margin:25px 0 0;
-                  color:#6b7280;
-                  font-size:13px;
-                  line-height:1.6;
-                "
-              >
-                Thank you for choosing
-                <strong style="color:#0878d1;">
-                  HealthCom
-                </strong>.
-              </p>
-
-            </div>
-
-            <!-- FOOTER -->
-
-            <div
-              style="
-                padding:20px 30px;
-                background:#f8fafc;
-                border-top:1px solid #edf1f5;
-                text-align:center;
-                color:#9ca3af;
-                font-size:12px;
-              "
-            >
-              © ${new Date().getFullYear()}
-              HealthCom. All rights reserved.
-            </div>
-
-          </div>
-
-        </div>
-
-      </body>
-
-      </html>
-    `,
-  };
-
-  await transporter.sendMail(mailOptions);
+</body>
+</html>
+`,
+  });
 }
 
 // =========================================================
@@ -598,14 +900,20 @@ async function sendDoctorAppointmentEmail({
   appointmentDate,
   appointmentTime,
 }) {
-  const mailOptions = {
-    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
+  const name = safeValue(firstName, "Doctor");
+  const patient = safeValue(patientName);
+  const pEmail = safeValue(patientEmail);
+  const phone = safeValue(patientPhone);
+  const doctor = safeValue(doctorName);
+  const date = safeValue(appointmentDate);
+  const time = safeValue(appointmentTime);
+
+  return sendEmail({
     to: email,
 
-    subject:
-      "HealthCom - New Appointment Request",
+    subject: "HealthCom - New Appointment Request",
 
-    text: `Hello ${firstName},
+    text: `Hello ${firstName || "Doctor"},
 
 You have received a new appointment request through HealthCom.
 
@@ -620,379 +928,260 @@ Time: ${appointmentTime}
 Please open your HealthCom dashboard to review and accept or reject this appointment request.`,
 
     html: `
-      <!DOCTYPE html>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>New Appointment Request</title>
+</head>
 
-      <html>
+<body style="
+margin:0;
+padding:0;
+background:#f3f7fb;
+font-family:Arial,Helvetica,sans-serif;
+color:#1f2937;
+">
 
-      <head>
+<div style="padding:32px 14px;">
 
-        <meta charset="UTF-8" />
+<div style="
+max-width:620px;
+margin:auto;
+background:#ffffff;
+border:1px solid #e5eaf1;
+border-radius:18px;
+overflow:hidden;
+">
 
-        <meta
-          name="viewport"
-          content="width=device-width, initial-scale=1.0"
-        />
+<div style="
+background:#0878d1;
+padding:30px;
+color:#ffffff;
+">
 
-        <title>
-          New Appointment Request
-        </title>
+<div style="
+font-size:13px;
+letter-spacing:1.5px;
+text-transform:uppercase;
+font-weight:700;
+">
+HealthCom
+</div>
 
-      </head>
+<h1 style="
+margin:8px 0 0;
+font-size:26px;
+">
+New Appointment Request
+</h1>
 
-      <body
-        style="
-          margin:0;
-          padding:0;
-          background:#f3f7fb;
-          font-family:Arial,Helvetica,sans-serif;
-          color:#1f2937;
-        "
-      >
+</div>
 
-        <div
-          style="
-            width:100%;
-            padding:32px 14px;
-            box-sizing:border-box;
-          "
-        >
+<div style="padding:30px;">
 
-          <div
-            style="
-              max-width:620px;
-              margin:0 auto;
-              background:#ffffff;
-              border:1px solid #e5eaf1;
-              border-radius:18px;
-              overflow:hidden;
-              box-shadow:0 8px 30px rgba(15,23,42,0.07);
-            "
-          >
+<div style="
+display:inline-block;
+padding:9px 14px;
+background:#eff6ff;
+color:#1d4ed8;
+border:1px solid #bfdbfe;
+border-radius:999px;
+font-size:13px;
+font-weight:700;
+">
+● Action Required
+</div>
 
-            <!-- HEADER -->
+<p style="margin:24px 0 10px;font-size:16px;">
+Hello ${name},
+</p>
 
-            <div
-              style="
-                background:linear-gradient(
-                  135deg,
-                  #0878d1,
-                  #0b5cad
-                );
-                padding:30px;
-                color:#ffffff;
-              "
-            >
+<p style="
+margin:0;
+color:#4b5563;
+font-size:15px;
+line-height:1.7;
+">
+A patient has submitted a new appointment request.
+Please review the details below and choose the appropriate
+action from your HealthCom dashboard.
+</p>
 
-              <div
-                style="
-                  font-size:13px;
-                  letter-spacing:1.5px;
-                  text-transform:uppercase;
-                  opacity:.85;
-                  font-weight:700;
-                "
-              >
-                HealthCom
-              </div>
+<div style="
+margin:24px 0;
+padding:22px;
+background:#f8fbff;
+border:1px solid #e1edf9;
+border-radius:14px;
+">
 
-              <h1
-                style="
-                  margin:8px 0 0;
-                  font-size:26px;
-                  line-height:1.25;
-                "
-              >
-                New Appointment Request
-              </h1>
+<div style="
+font-size:13px;
+color:#6b7280;
+font-weight:700;
+text-transform:uppercase;
+margin-bottom:16px;
+">
+Patient Details
+</div>
 
-            </div>
+<table width="100%" cellpadding="0" cellspacing="0">
 
-            <!-- CONTENT -->
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Patient
+</td>
 
-            <div style="padding:30px;">
+<td style="padding:10px 0;text-align:right;font-weight:bold;">
+${patient}
+</td>
+</tr>
 
-              <div
-                style="
-                  display:inline-block;
-                  padding:9px 14px;
-                  background:#eff6ff;
-                  color:#1d4ed8;
-                  border:1px solid #bfdbfe;
-                  border-radius:999px;
-                  font-size:13px;
-                  font-weight:700;
-                "
-              >
-                ● Action Required
-              </div>
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Email
+</td>
 
-              <p
-                style="
-                  margin:24px 0 10px;
-                  font-size:16px;
-                "
-              >
-                Hello ${firstName || "Doctor"},
-              </p>
+<td style="padding:10px 0;text-align:right;font-weight:bold;word-break:break-word;">
+${pEmail}
+</td>
+</tr>
 
-              <p
-                style="
-                  margin:0;
-                  color:#4b5563;
-                  font-size:15px;
-                  line-height:1.7;
-                "
-              >
-                A patient has submitted a new
-                appointment request. Please review
-                the details below and choose the
-                appropriate action from your HealthCom
-                dashboard.
-              </p>
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Phone
+</td>
 
-              <!-- PATIENT DETAILS -->
+<td style="padding:10px 0;text-align:right;font-weight:bold;">
+${phone}
+</td>
+</tr>
 
-              <div
-                style="
-                  margin:24px 0;
-                  padding:22px;
-                  background:#f8fbff;
-                  border:1px solid #e1edf9;
-                  border-radius:14px;
-                "
-              >
+</table>
 
-                <div
-                  style="
-                    font-size:13px;
-                    color:#6b7280;
-                    font-weight:700;
-                    text-transform:uppercase;
-                    letter-spacing:.6px;
-                    margin-bottom:16px;
-                  "
-                >
-                  Patient Details
-                </div>
+</div>
 
-                <div
-                  style="
-                    padding:11px 0;
-                    border-bottom:1px solid #e8eef5;
-                  "
-                >
-                  <span style="color:#6b7280;">
-                    Patient
-                  </span>
+<div style="
+padding:22px;
+background:#f8fafc;
+border:1px solid #e5e7eb;
+border-radius:14px;
+">
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${patientName}
-                  </strong>
-                </div>
+<div style="
+font-size:13px;
+color:#6b7280;
+font-weight:700;
+text-transform:uppercase;
+margin-bottom:16px;
+">
+Appointment Details
+</div>
 
-                <div
-                  style="
-                    padding:11px 0;
-                    border-bottom:1px solid #e8eef5;
-                  "
-                >
-                  <span style="color:#6b7280;">
-                    Email
-                  </span>
+<table width="100%" cellpadding="0" cellspacing="0">
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${patientEmail}
-                  </strong>
-                </div>
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Doctor
+</td>
 
-                <div style="padding:11px 0;">
+<td style="padding:10px 0;text-align:right;font-weight:bold;">
+${doctor}
+</td>
+</tr>
 
-                  <span style="color:#6b7280;">
-                    Phone
-                  </span>
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Date
+</td>
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${patientPhone || "Not provided"}
-                  </strong>
+<td style="padding:10px 0;text-align:right;font-weight:bold;">
+${date}
+</td>
+</tr>
 
-                </div>
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Time
+</td>
 
-              </div>
+<td style="padding:10px 0;text-align:right;font-weight:bold;">
+${time}
+</td>
+</tr>
 
-              <!-- APPOINTMENT DETAILS -->
+</table>
 
-              <div
-                style="
-                  padding:22px;
-                  background:#f8fafc;
-                  border:1px solid #e5e7eb;
-                  border-radius:14px;
-                "
-              >
+</div>
 
-                <div
-                  style="
-                    font-size:13px;
-                    color:#6b7280;
-                    font-weight:700;
-                    text-transform:uppercase;
-                    letter-spacing:.6px;
-                    margin-bottom:16px;
-                  "
-                >
-                  Appointment Details
-                </div>
+<div style="
+margin-top:24px;
+padding:15px 17px;
+background:#fff7ed;
+border:1px solid #fed7aa;
+border-radius:12px;
+color:#9a3412;
+font-size:14px;
+line-height:1.6;
+">
 
-                <div
-                  style="
-                    padding:10px 0;
-                    border-bottom:1px solid #e5e7eb;
-                  "
-                >
-                  <span style="color:#6b7280;">
-                    Doctor
-                  </span>
+<strong>Pending your decision.</strong>
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${doctorName}
-                  </strong>
-                </div>
+<br><br>
 
-                <div
-                  style="
-                    padding:10px 0;
-                    border-bottom:1px solid #e5e7eb;
-                  "
-                >
-                  <span style="color:#6b7280;">
-                    Date
-                  </span>
+Please review this request in your HealthCom dashboard
+and accept or reject it.
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${appointmentDate}
-                  </strong>
-                </div>
+</div>
 
-                <div style="padding:10px 0;">
+</div>
 
-                  <span style="color:#6b7280;">
-                    Time
-                  </span>
+<div style="
+padding:20px 30px;
+background:#f8fafc;
+text-align:center;
+color:#9ca3af;
+font-size:12px;
+">
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${appointmentTime}
-                  </strong>
+© ${new Date().getFullYear()} HealthCom. All rights reserved.
 
-                </div>
+</div>
 
-              </div>
+</div>
 
-              <!-- ACTION MESSAGE -->
+</div>
 
-              <div
-                style="
-                  margin-top:24px;
-                  padding:15px 17px;
-                  background:#fff7ed;
-                  border:1px solid #fed7aa;
-                  border-radius:12px;
-                  color:#9a3412;
-                  font-size:14px;
-                  line-height:1.6;
-                "
-              >
-
-                <strong>
-                  Pending your decision.
-                </strong>
-
-                <br />
-
-                Please review this request in your
-                HealthCom dashboard and accept or
-                reject it.
-
-              </div>
-
-            </div>
-
-            <!-- FOOTER -->
-
-            <div
-              style="
-                padding:20px 30px;
-                background:#f8fafc;
-                border-top:1px solid #edf1f5;
-                text-align:center;
-                color:#9ca3af;
-                font-size:12px;
-              "
-            >
-              © ${new Date().getFullYear()}
-              HealthCom. All rights reserved.
-            </div>
-
-          </div>
-
-        </div>
-
-      </body>
-
-      </html>
-    `,
-  };
-
-  await transporter.sendMail(mailOptions);
+</body>
+</html>
+`,
+  });
 }
 
 // =========================================================
 // PATIENT APPOINTMENT CANCELLATION EMAIL
 // =========================================================
 
-const sendPatientAppointmentCancellationEmail = async ({
+async function sendPatientAppointmentCancellationEmail({
   email,
   firstName,
   doctorName,
   specialty,
   appointmentDate,
   appointmentTime,
-}) => {
-  const mailOptions = {
-    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
+}) {
+  const name = safeValue(firstName, "Patient");
+  const doctor = safeValue(doctorName);
+  const specialization = safeValue(specialty);
+  const date = safeValue(appointmentDate);
+  const time = safeValue(appointmentTime);
+
+  return sendEmail({
     to: email,
 
-    subject:
-      "HealthCom - Appointment Cancelled",
+    subject: "HealthCom - Appointment Cancelled",
 
     text: `Hello ${firstName || "Patient"},
 
@@ -1006,320 +1195,222 @@ Time: ${appointmentTime}
 You can book another appointment through your HealthCom dashboard.`,
 
     html: `
-      <!DOCTYPE html>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Appointment Cancelled</title>
+</head>
 
-      <html>
+<body style="
+margin:0;
+padding:0;
+background:#f3f7fb;
+font-family:Arial,Helvetica,sans-serif;
+">
 
-      <head>
+<div style="padding:32px 14px;">
 
-        <meta charset="UTF-8" />
+<div style="
+max-width:620px;
+margin:auto;
+background:#ffffff;
+border:1px solid #e5e7eb;
+border-radius:18px;
+overflow:hidden;
+">
 
-        <meta
-          name="viewport"
-          content="width=device-width, initial-scale=1.0"
-        />
+<div style="
+background:#dc2626;
+padding:30px;
+color:#ffffff;
+">
 
-        <title>
-          Appointment Cancelled
-        </title>
+<div style="
+font-size:13px;
+letter-spacing:1.5px;
+text-transform:uppercase;
+font-weight:bold;
+">
+HealthCom
+</div>
 
-      </head>
+<h1 style="
+margin:8px 0 0;
+font-size:26px;
+">
+Appointment Cancelled
+</h1>
 
-      <body
-        style="
-          margin:0;
-          padding:0;
-          background:#f3f7fb;
-          font-family:Arial,Helvetica,sans-serif;
-          color:#1f2937;
-        "
-      >
+</div>
 
-        <div
-          style="
-            width:100%;
-            padding:32px 14px;
-            box-sizing:border-box;
-          "
-        >
+<div style="padding:30px;">
 
-          <div
-            style="
-              max-width:620px;
-              margin:0 auto;
-              background:#ffffff;
-              border:1px solid #e5e7eb;
-              border-radius:18px;
-              overflow:hidden;
-              box-shadow:0 8px 30px rgba(15,23,42,0.07);
-            "
-          >
+<div style="
+display:inline-block;
+padding:9px 14px;
+background:#fef2f2;
+color:#b91c1c;
+border:1px solid #fecaca;
+border-radius:999px;
+font-size:13px;
+font-weight:bold;
+">
+● Cancelled
+</div>
 
-            <!-- HEADER -->
+<p style="margin:24px 0 10px;font-size:16px;">
+Hello ${name},
+</p>
 
-            <div
-              style="
-                background:linear-gradient(
-                  135deg,
-                  #b91c1c,
-                  #dc2626
-                );
-                padding:30px;
-                color:#ffffff;
-              "
-            >
+<p style="
+color:#4b5563;
+font-size:15px;
+line-height:1.7;
+">
+Your appointment has been cancelled successfully.
+The appointment details are provided below for your reference.
+</p>
 
-              <div
-                style="
-                  font-size:13px;
-                  letter-spacing:1.5px;
-                  text-transform:uppercase;
-                  opacity:.9;
-                  font-weight:700;
-                "
-              >
-                HealthCom
-              </div>
+<div style="
+margin:24px 0;
+padding:22px;
+background:#fffafa;
+border:1px solid #fee2e2;
+border-radius:14px;
+">
 
-              <h1
-                style="
-                  margin:8px 0 0;
-                  font-size:26px;
-                  line-height:1.25;
-                "
-              >
-                Appointment Cancelled
-              </h1>
+<div style="
+font-size:13px;
+color:#991b1b;
+font-weight:bold;
+text-transform:uppercase;
+margin-bottom:16px;
+">
+Cancelled Appointment
+</div>
 
-            </div>
+<table width="100%" cellpadding="0" cellspacing="0">
 
-            <!-- CONTENT -->
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Doctor
+</td>
 
-            <div style="padding:30px;">
+<td style="padding:10px 0;text-align:right;font-weight:bold;">
+${doctor}
+</td>
+</tr>
 
-              <div
-                style="
-                  display:inline-block;
-                  padding:9px 14px;
-                  background:#fef2f2;
-                  color:#b91c1c;
-                  border:1px solid #fecaca;
-                  border-radius:999px;
-                  font-size:13px;
-                  font-weight:700;
-                "
-              >
-                ● Cancelled
-              </div>
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Specialization
+</td>
 
-              <p
-                style="
-                  margin:24px 0 10px;
-                  font-size:16px;
-                "
-              >
-                Hello ${firstName || "Patient"},
-              </p>
+<td style="padding:10px 0;text-align:right;font-weight:bold;">
+${specialization}
+</td>
+</tr>
 
-              <p
-                style="
-                  margin:0;
-                  color:#4b5563;
-                  font-size:15px;
-                  line-height:1.7;
-                "
-              >
-                Your appointment has been cancelled
-                successfully. The appointment details
-                are provided below for your reference.
-              </p>
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Date
+</td>
 
-              <!-- DETAILS -->
+<td style="padding:10px 0;text-align:right;font-weight:bold;">
+${date}
+</td>
+</tr>
 
-              <div
-                style="
-                  margin:24px 0;
-                  padding:22px;
-                  background:#fffafa;
-                  border:1px solid #fee2e2;
-                  border-radius:14px;
-                "
-              >
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Time
+</td>
 
-                <div
-                  style="
-                    font-size:13px;
-                    color:#6b7280;
-                    font-weight:700;
-                    text-transform:uppercase;
-                    letter-spacing:.6px;
-                    margin-bottom:16px;
-                  "
-                >
-                  Cancelled Appointment
-                </div>
+<td style="padding:10px 0;text-align:right;font-weight:bold;">
+${time}
+</td>
+</tr>
 
-                <div
-                  style="
-                    padding:11px 0;
-                    border-bottom:1px solid #f1e5e5;
-                  "
-                >
-                  <span style="color:#6b7280;">
-                    Doctor
-                  </span>
+</table>
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${doctorName}
-                  </strong>
-                </div>
+</div>
 
-                <div
-                  style="
-                    padding:11px 0;
-                    border-bottom:1px solid #f1e5e5;
-                  "
-                >
-                  <span style="color:#6b7280;">
-                    Specialization
-                  </span>
+<div style="
+padding:15px 17px;
+background:#eff6ff;
+border:1px solid #bfdbfe;
+border-radius:12px;
+color:#1e40af;
+font-size:14px;
+line-height:1.6;
+">
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${specialty}
-                  </strong>
-                </div>
+Need another consultation?
 
-                <div
-                  style="
-                    padding:11px 0;
-                    border-bottom:1px solid #f1e5e5;
-                  "
-                >
-                  <span style="color:#6b7280;">
-                    Date
-                  </span>
+You can search for an available doctor and book
+a new appointment from your HealthCom account.
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${appointmentDate}
-                  </strong>
-                </div>
+</div>
 
-                <div style="padding:11px 0;">
+<p style="
+margin-top:25px;
+color:#6b7280;
+font-size:13px;
+">
+Regards,<br>
+<strong style="color:#0878d1;">
+HealthCom Team
+</strong>
+</p>
 
-                  <span style="color:#6b7280;">
-                    Time
-                  </span>
+</div>
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${appointmentTime}
-                  </strong>
+<div style="
+padding:20px 30px;
+background:#f8fafc;
+text-align:center;
+color:#9ca3af;
+font-size:12px;
+">
 
-                </div>
+© ${new Date().getFullYear()} HealthCom. All rights reserved.
 
-              </div>
+</div>
 
-              <!-- INFO -->
+</div>
 
-              <div
-                style="
-                  padding:15px 17px;
-                  background:#eff6ff;
-                  border:1px solid #bfdbfe;
-                  border-radius:12px;
-                  color:#1e40af;
-                  font-size:14px;
-                  line-height:1.6;
-                "
-              >
-                Need another consultation?
-                You can search for an available doctor
-                and book a new appointment from your
-                HealthCom account.
-              </div>
+</div>
 
-              <p
-                style="
-                  margin:25px 0 0;
-                  color:#6b7280;
-                  font-size:13px;
-                "
-              >
-                Regards,<br />
-
-                <strong style="color:#0878d1;">
-                  HealthCom Team
-                </strong>
-              </p>
-
-            </div>
-
-            <!-- FOOTER -->
-
-            <div
-              style="
-                padding:20px 30px;
-                background:#f8fafc;
-                border-top:1px solid #edf1f5;
-                text-align:center;
-                color:#9ca3af;
-                font-size:12px;
-              "
-            >
-              © ${new Date().getFullYear()}
-              HealthCom. All rights reserved.
-            </div>
-
-          </div>
-
-        </div>
-
-      </body>
-
-      </html>
-    `,
-  };
-
-  await transporter.sendMail(mailOptions);
-};
+</body>
+</html>
+`,
+  });
+}
 
 // =========================================================
 // PATIENT APPOINTMENT ACCEPTED EMAIL
 // =========================================================
 
-const sendPatientAppointmentAcceptedEmail = async ({
+async function sendPatientAppointmentAcceptedEmail({
   email,
   firstName,
   doctorName,
   specialty,
   appointmentDate,
   appointmentTime,
-}) => {
-  const mailOptions = {
-    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
+}) {
+  const name = safeValue(firstName, "Patient");
+  const doctor = safeValue(doctorName);
+  const specialization = safeValue(specialty);
+  const date = safeValue(appointmentDate);
+  const time = safeValue(appointmentTime);
+
+  return sendEmail({
     to: email,
 
-    subject:
-      "HealthCom - Appointment Accepted",
+    subject: "HealthCom - Appointment Accepted",
 
     text: `Hello ${firstName || "Patient"},
 
@@ -1333,323 +1424,221 @@ Time: ${appointmentTime}
 Please log in to your HealthCom account to view your appointment details.`,
 
     html: `
-      <!DOCTYPE html>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Appointment Accepted</title>
+</head>
 
-      <html>
+<body style="
+margin:0;
+padding:0;
+background:#f3f7fb;
+font-family:Arial,Helvetica,sans-serif;
+">
 
-      <head>
+<div style="padding:32px 14px;">
 
-        <meta charset="UTF-8" />
+<div style="
+max-width:620px;
+margin:auto;
+background:#ffffff;
+border:1px solid #dbe7df;
+border-radius:18px;
+overflow:hidden;
+">
 
-        <meta
-          name="viewport"
-          content="width=device-width, initial-scale=1.0"
-        />
+<div style="
+background:#16a34a;
+padding:30px;
+color:#ffffff;
+">
 
-        <title>
-          Appointment Accepted
-        </title>
+<div style="
+font-size:13px;
+letter-spacing:1.5px;
+text-transform:uppercase;
+font-weight:bold;
+">
+HealthCom
+</div>
 
-      </head>
+<h1 style="
+margin:8px 0 0;
+font-size:26px;
+">
+Appointment Accepted
+</h1>
 
-      <body
-        style="
-          margin:0;
-          padding:0;
-          background:#f3f7fb;
-          font-family:Arial,Helvetica,sans-serif;
-          color:#1f2937;
-        "
-      >
+</div>
 
-        <div
-          style="
-            width:100%;
-            padding:32px 14px;
-            box-sizing:border-box;
-          "
-        >
+<div style="padding:30px;">
 
-          <div
-            style="
-              max-width:620px;
-              margin:0 auto;
-              background:#ffffff;
-              border:1px solid #dbe7df;
-              border-radius:18px;
-              overflow:hidden;
-              box-shadow:0 8px 30px rgba(15,23,42,0.07);
-            "
-          >
+<div style="
+display:inline-block;
+padding:9px 14px;
+background:#ecfdf5;
+color:#047857;
+border:1px solid #a7f3d0;
+border-radius:999px;
+font-size:13px;
+font-weight:bold;
+">
+✓ Confirmed
+</div>
 
-            <!-- HEADER -->
+<p style="margin:24px 0 10px;font-size:16px;">
+Hello ${name},
+</p>
 
-            <div
-              style="
-                background:linear-gradient(
-                  135deg,
-                  #047857,
-                  #16a34a
-                );
-                padding:30px;
-                color:#ffffff;
-              "
-            >
+<p style="
+color:#4b5563;
+font-size:15px;
+line-height:1.7;
+">
+Great news! Your appointment request has been accepted
+by the doctor. Your appointment is now confirmed.
+</p>
 
-              <div
-                style="
-                  font-size:13px;
-                  letter-spacing:1.5px;
-                  text-transform:uppercase;
-                  opacity:.9;
-                  font-weight:700;
-                "
-              >
-                HealthCom
-              </div>
+<div style="
+margin:24px 0;
+padding:22px;
+background:#f0fdf4;
+border:1px solid #bbf7d0;
+border-radius:14px;
+">
 
-              <h1
-                style="
-                  margin:8px 0 0;
-                  font-size:26px;
-                  line-height:1.25;
-                "
-              >
-                Appointment Accepted
-              </h1>
+<div style="
+font-size:13px;
+color:#166534;
+font-weight:bold;
+text-transform:uppercase;
+margin-bottom:16px;
+">
+Confirmed Appointment
+</div>
 
-            </div>
+<table width="100%" cellpadding="0" cellspacing="0">
 
-            <!-- CONTENT -->
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Doctor
+</td>
 
-            <div style="padding:30px;">
+<td style="padding:10px 0;text-align:right;font-weight:bold;">
+${doctor}
+</td>
+</tr>
 
-              <div
-                style="
-                  display:inline-block;
-                  padding:9px 14px;
-                  background:#ecfdf5;
-                  color:#047857;
-                  border:1px solid #a7f3d0;
-                  border-radius:999px;
-                  font-size:13px;
-                  font-weight:700;
-                "
-              >
-                ✓ Confirmed
-              </div>
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Specialization
+</td>
 
-              <p
-                style="
-                  margin:24px 0 10px;
-                  font-size:16px;
-                "
-              >
-                Hello ${firstName || "Patient"},
-              </p>
+<td style="padding:10px 0;text-align:right;font-weight:bold;">
+${specialization}
+</td>
+</tr>
 
-              <p
-                style="
-                  margin:0;
-                  color:#4b5563;
-                  font-size:15px;
-                  line-height:1.7;
-                "
-              >
-                Great news! Your appointment request
-                has been accepted by the doctor.
-                Your appointment is now confirmed.
-              </p>
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Date
+</td>
 
-              <!-- CONFIRMED DETAILS -->
+<td style="padding:10px 0;text-align:right;font-weight:bold;">
+${date}
+</td>
+</tr>
 
-              <div
-                style="
-                  margin:24px 0;
-                  padding:22px;
-                  background:#f0fdf4;
-                  border:1px solid #bbf7d0;
-                  border-radius:14px;
-                "
-              >
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Time
+</td>
 
-                <div
-                  style="
-                    font-size:13px;
-                    color:#166534;
-                    font-weight:700;
-                    text-transform:uppercase;
-                    letter-spacing:.6px;
-                    margin-bottom:16px;
-                  "
-                >
-                  Confirmed Appointment
-                </div>
+<td style="padding:10px 0;text-align:right;font-weight:bold;">
+${time}
+</td>
+</tr>
 
-                <div
-                  style="
-                    padding:11px 0;
-                    border-bottom:1px solid #dcfce7;
-                  "
-                >
-                  <span style="color:#6b7280;">
-                    Doctor
-                  </span>
+</table>
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${doctorName}
-                  </strong>
-                </div>
+</div>
 
-                <div
-                  style="
-                    padding:11px 0;
-                    border-bottom:1px solid #dcfce7;
-                  "
-                >
-                  <span style="color:#6b7280;">
-                    Specialization
-                  </span>
+<div style="
+padding:15px 17px;
+background:#eff6ff;
+border:1px solid #bfdbfe;
+border-radius:12px;
+color:#1e40af;
+font-size:14px;
+line-height:1.6;
+">
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${specialty}
-                  </strong>
-                </div>
+Please log in to your HealthCom account to view
+the complete appointment details and manage your consultation.
 
-                <div
-                  style="
-                    padding:11px 0;
-                    border-bottom:1px solid #dcfce7;
-                  "
-                >
-                  <span style="color:#6b7280;">
-                    Date
-                  </span>
+</div>
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${appointmentDate}
-                  </strong>
-                </div>
+<p style="
+margin-top:25px;
+color:#6b7280;
+font-size:13px;
+">
+We look forward to helping you stay healthy.
+<br><br>
+<strong style="color:#0878d1;">
+HealthCom Team
+</strong>
+</p>
 
-                <div style="padding:11px 0;">
+</div>
 
-                  <span style="color:#6b7280;">
-                    Time
-                  </span>
+<div style="
+padding:20px 30px;
+background:#f8fafc;
+text-align:center;
+color:#9ca3af;
+font-size:12px;
+">
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${appointmentTime}
-                  </strong>
+© ${new Date().getFullYear()} HealthCom. All rights reserved.
 
-                </div>
+</div>
 
-              </div>
+</div>
 
-              <!-- INFO -->
+</div>
 
-              <div
-                style="
-                  padding:15px 17px;
-                  background:#eff6ff;
-                  border:1px solid #bfdbfe;
-                  border-radius:12px;
-                  color:#1e40af;
-                  font-size:14px;
-                  line-height:1.6;
-                "
-              >
-                Please log in to your HealthCom
-                account to view the complete
-                appointment details and manage
-                your consultation.
-              </div>
-
-              <p
-                style="
-                  margin:25px 0 0;
-                  color:#6b7280;
-                  font-size:13px;
-                "
-              >
-                We look forward to helping you
-                stay healthy.
-
-                <br />
-
-                <strong style="color:#0878d1;">
-                  HealthCom Team
-                </strong>
-              </p>
-
-            </div>
-
-            <!-- FOOTER -->
-
-            <div
-              style="
-                padding:20px 30px;
-                background:#f8fafc;
-                border-top:1px solid #edf1f5;
-                text-align:center;
-                color:#9ca3af;
-                font-size:12px;
-              "
-            >
-              © ${new Date().getFullYear()}
-              HealthCom. All rights reserved.
-            </div>
-
-          </div>
-
-        </div>
-
-      </body>
-
-      </html>
-    `,
-  };
-
-  await transporter.sendMail(mailOptions);
-};
+</body>
+</html>
+`,
+  });
+}
 
 // =========================================================
 // PATIENT APPOINTMENT REJECTED EMAIL
 // =========================================================
 
-const sendPatientAppointmentRejectedEmail = async ({
+async function sendPatientAppointmentRejectedEmail({
   email,
   firstName,
   doctorName,
   specialty,
   appointmentDate,
   appointmentTime,
-}) => {
-  const mailOptions = {
-    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
+}) {
+  const name = safeValue(firstName, "Patient");
+  const doctor = safeValue(doctorName);
+  const specialization = safeValue(specialty);
+  const date = safeValue(appointmentDate);
+  const time = safeValue(appointmentTime);
+
+  return sendEmail({
     to: email,
 
-    subject:
-      "HealthCom - Appointment Request Rejected",
+    subject: "HealthCom - Appointment Request Rejected",
 
     text: `Hello ${firstName || "Patient"},
 
@@ -1663,1113 +1652,800 @@ Time: ${appointmentTime}
 You can search for another available doctor from your HealthCom account.`,
 
     html: `
-      <!DOCTYPE html>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Appointment Request Rejected</title>
+</head>
 
-      <html>
+<body style="
+margin:0;
+padding:0;
+background:#f3f7fb;
+font-family:Arial,Helvetica,sans-serif;
+">
 
-      <head>
+<div style="padding:32px 14px;">
 
-        <meta charset="UTF-8" />
+<div style="
+max-width:620px;
+margin:auto;
+background:#ffffff;
+border:1px solid #eadede;
+border-radius:18px;
+overflow:hidden;
+">
 
-        <meta
-          name="viewport"
-          content="width=device-width, initial-scale=1.0"
-        />
+<div style="
+background:#dc2626;
+padding:30px;
+color:#ffffff;
+">
 
-        <title>
-          Appointment Request Rejected
-        </title>
+<div style="
+font-size:13px;
+letter-spacing:1.5px;
+text-transform:uppercase;
+font-weight:bold;
+">
+HealthCom
+</div>
 
-      </head>
+<h1 style="
+margin:8px 0 0;
+font-size:26px;
+">
+Appointment Request Rejected
+</h1>
 
-      <body
-        style="
-          margin:0;
-          padding:0;
-          background:#f3f7fb;
-          font-family:Arial,Helvetica,sans-serif;
-          color:#1f2937;
-        "
-      >
+</div>
 
-        <div
-          style="
-            width:100%;
-            padding:32px 14px;
-            box-sizing:border-box;
-          "
-        >
+<div style="padding:30px;">
 
-          <div
-            style="
-              max-width:620px;
-              margin:0 auto;
-              background:#ffffff;
-              border:1px solid #eadede;
-              border-radius:18px;
-              overflow:hidden;
-              box-shadow:0 8px 30px rgba(15,23,42,0.07);
-            "
-          >
+<div style="
+display:inline-block;
+padding:9px 14px;
+background:#fef2f2;
+color:#b91c1c;
+border:1px solid #fecaca;
+border-radius:999px;
+font-size:13px;
+font-weight:bold;
+">
+✕ Request Rejected
+</div>
 
-            <!-- HEADER -->
+<p style="margin:24px 0 10px;font-size:16px;">
+Hello ${name},
+</p>
 
-            <div
-              style="
-                background:linear-gradient(
-                  135deg,
-                  #991b1b,
-                  #dc2626
-                );
-                padding:30px;
-                color:#ffffff;
-              "
-            >
+<p style="
+color:#4b5563;
+font-size:15px;
+line-height:1.7;
+">
+Unfortunately, your appointment request could not be
+accepted by the doctor. The details of the request
+are provided below.
+</p>
 
-              <div
-                style="
-                  font-size:13px;
-                  letter-spacing:1.5px;
-                  text-transform:uppercase;
-                  opacity:.9;
-                  font-weight:700;
-                "
-              >
-                HealthCom
-              </div>
+<div style="
+margin:24px 0;
+padding:22px;
+background:#fffafa;
+border:1px solid #fee2e2;
+border-radius:14px;
+">
 
-              <h1
-                style="
-                  margin:8px 0 0;
-                  font-size:26px;
-                  line-height:1.25;
-                "
-              >
-                Appointment Request Rejected
-              </h1>
+<div style="
+font-size:13px;
+color:#991b1b;
+font-weight:bold;
+text-transform:uppercase;
+margin-bottom:16px;
+">
+Request Details
+</div>
 
-            </div>
+<table width="100%" cellpadding="0" cellspacing="0">
 
-            <!-- CONTENT -->
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Doctor
+</td>
 
-            <div style="padding:30px;">
+<td style="padding:10px 0;text-align:right;font-weight:bold;">
+${doctor}
+</td>
+</tr>
 
-              <div
-                style="
-                  display:inline-block;
-                  padding:9px 14px;
-                  background:#fef2f2;
-                  color:#b91c1c;
-                  border:1px solid #fecaca;
-                  border-radius:999px;
-                  font-size:13px;
-                  font-weight:700;
-                "
-              >
-                ✕ Request Rejected
-              </div>
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Specialization
+</td>
 
-              <p
-                style="
-                  margin:24px 0 10px;
-                  font-size:16px;
-                "
-              >
-                Hello ${firstName || "Patient"},
-              </p>
+<td style="padding:10px 0;text-align:right;font-weight:bold;">
+${specialization}
+</td>
+</tr>
 
-              <p
-                style="
-                  margin:0;
-                  color:#4b5563;
-                  font-size:15px;
-                  line-height:1.7;
-                "
-              >
-                Unfortunately, your appointment
-                request could not be accepted by
-                the doctor. The details of the request
-                are provided below.
-              </p>
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Date
+</td>
 
-              <!-- REQUEST DETAILS -->
+<td style="padding:10px 0;text-align:right;font-weight:bold;">
+${date}
+</td>
+</tr>
 
-              <div
-                style="
-                  margin:24px 0;
-                  padding:22px;
-                  background:#fffafa;
-                  border:1px solid #fee2e2;
-                  border-radius:14px;
-                "
-              >
+<tr>
+<td style="padding:10px 0;color:#6b7280;">
+Time
+</td>
 
-                <div
-                  style="
-                    font-size:13px;
-                    color:#991b1b;
-                    font-weight:700;
-                    text-transform:uppercase;
-                    letter-spacing:.6px;
-                    margin-bottom:16px;
-                  "
-                >
-                  Request Details
-                </div>
+<td style="padding:10px 0;text-align:right;font-weight:bold;">
+${time}
+</td>
+</tr>
 
-                <div
-                  style="
-                    padding:11px 0;
-                    border-bottom:1px solid #f3e1e1;
-                  "
-                >
-                  <span style="color:#6b7280;">
-                    Doctor
-                  </span>
+</table>
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${doctorName}
-                  </strong>
-                </div>
+</div>
 
-                <div
-                  style="
-                    padding:11px 0;
-                    border-bottom:1px solid #f3e1e1;
-                  "
-                >
-                  <span style="color:#6b7280;">
-                    Specialization
-                  </span>
+<div style="
+padding:15px 17px;
+background:#eff6ff;
+border:1px solid #bfdbfe;
+border-radius:12px;
+color:#1e40af;
+font-size:14px;
+line-height:1.6;
+">
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${specialty}
-                  </strong>
-                </div>
+Don't worry. You can search for another available
+doctor and submit a new appointment request from
+your HealthCom account.
 
-                <div
-                  style="
-                    padding:11px 0;
-                    border-bottom:1px solid #f3e1e1;
-                  "
-                >
-                  <span style="color:#6b7280;">
-                    Date
-                  </span>
+</div>
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${appointmentDate}
-                  </strong>
-                </div>
+<p style="
+margin-top:25px;
+color:#6b7280;
+font-size:13px;
+">
+Regards,<br>
+<strong style="color:#0878d1;">
+HealthCom Team
+</strong>
+</p>
 
-                <div style="padding:11px 0;">
+</div>
 
-                  <span style="color:#6b7280;">
-                    Time
-                  </span>
+<div style="
+padding:20px 30px;
+background:#f8fafc;
+text-align:center;
+color:#9ca3af;
+font-size:12px;
+">
 
-                  <strong
-                    style="
-                      float:right;
-                      color:#111827;
-                    "
-                  >
-                    ${appointmentTime}
-                  </strong>
+© ${new Date().getFullYear()} HealthCom. All rights reserved.
 
-                </div>
+</div>
 
-              </div>
+</div>
 
-              <!-- ALTERNATIVE -->
+</div>
 
-              <div
-                style="
-                  padding:15px 17px;
-                  background:#eff6ff;
-                  border:1px solid #bfdbfe;
-                  border-radius:12px;
-                  color:#1e40af;
-                  font-size:14px;
-                  line-height:1.6;
-                "
-              >
-                Don't worry. You can search for
-                another available doctor and submit
-                a new appointment request from your
-                HealthCom account.
-              </div>
+</body>
+</html>
+`,
+  });
+}
 
-              <p
-                style="
-                  margin:25px 0 0;
-                  color:#6b7280;
-                  font-size:13px;
-                "
-              >
-                Regards,<br />
-
-                <strong style="color:#0878d1;">
-                  HealthCom Team
-                </strong>
-              </p>
-
-            </div>
-
-            <!-- FOOTER -->
-
-            <div
-              style="
-                padding:20px 30px;
-                background:#f8fafc;
-                border-top:1px solid #edf1f5;
-                text-align:center;
-                color:#9ca3af;
-                font-size:12px;
-              "
-            >
-              © ${new Date().getFullYear()}
-              HealthCom. All rights reserved.
-            </div>
-
-          </div>
-
-        </div>
-
-      </body>
-
-      </html>
-    `,
-  };
-
-  await transporter.sendMail(mailOptions);
-};
-
-
-// ======================================================
+// =========================================================
 // SUBSCRIPTION PAYMENT SUCCESS EMAIL
-// ======================================================
+// =========================================================
 
-
-// ======================================================
-// SUBSCRIPTION PAYMENT SUCCESS EMAIL
-// ======================================================
-
-const sendSubscriptionSuccessEmail = async ({
+async function sendSubscriptionSuccessEmail({
   email,
   firstName,
   planName,
   amount,
   transactionId,
   endDate,
-}) => {
+}) {
+  const name = safeValue(firstName, "Doctor");
+  const plan = safeValue(planName);
+  const price = safeValue(amount);
+  const transaction = safeValue(transactionId);
+  const validUntil = formatDate(endDate);
 
-  await transporter.sendMail({
-    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
+  return sendEmail({
     to: email,
+
     subject: "HealthCom Subscription Activated",
+
+    text: `Hello ${firstName || "Doctor"},
+
+Your HealthCom subscription payment has been successfully processed.
+
+Subscription Plan: ${planName}
+Amount Paid: ₹${amount}
+Transaction ID: ${transactionId}
+Valid Until: ${validUntil}
+
+Your plan is now active and ready to use.
+
+Thank you for choosing HealthCom.`,
+
     html: `
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-    <style>
-        body {
-            margin: 0;
-            padding: 0;
-            background: #f4f7fb;
-            font-family: Arial, Helvetica, sans-serif;
-            color: #172033;
-        }
-
-        table {
-            border-collapse: collapse;
-        }
-
-        .wrapper {
-            width: 100%;
-            padding: 45px 15px;
-            background: #f4f7fb;
-        }
-
-        .container {
-            width: 100%;
-            max-width: 650px;
-            margin: auto;
-            background: #ffffff;
-            border: 1px solid #e8edf4;
-            border-radius: 20px;
-            overflow: hidden;
-        }
-
-        .header {
-            padding: 28px 38px;
-            border-bottom: 1px solid #edf1f6;
-            background: #ffffff;
-        }
-
-        .logo {
-            font-size: 25px;
-            font-weight: 800;
-            letter-spacing: -0.5px;
-            color: #10233f;
-        }
-
-        .logo span {
-            color: #2563eb;
-        }
-
-        .content {
-            padding: 42px 38px;
-        }
-
-        .icon {
-            width: 58px;
-            height: 58px;
-            line-height: 58px;
-            text-align: center;
-            border-radius: 50%;
-            background: #ecfdf3;
-            color: #16a34a;
-            font-size: 28px;
-            font-weight: bold;
-        }
-
-        .heading {
-            margin: 24px 0 10px;
-            font-size: 30px;
-            line-height: 1.25;
-            color: #111827;
-        }
-
-        .intro {
-            margin: 0;
-            font-size: 15px;
-            line-height: 1.8;
-            color: #667085;
-        }
-
-        .badge {
-            display: inline-block;
-            margin-top: 20px;
-            padding: 8px 14px;
-            border-radius: 30px;
-            background: #ecfdf3;
-            color: #15803d;
-            font-size: 11px;
-            font-weight: 800;
-            letter-spacing: 0.6px;
-        }
-
-        .card {
-            margin-top: 32px;
-            border: 1px solid #e6eaf0;
-            border-radius: 14px;
-            overflow: hidden;
-        }
-
-        .card-title {
-            padding: 17px 20px;
-            background: #f8fafc;
-            border-bottom: 1px solid #e6eaf0;
-            font-size: 14px;
-            font-weight: 700;
-            color: #344054;
-        }
-
-        .row {
-            border-bottom: 1px solid #eef1f5;
-        }
-
-        .row:last-child {
-            border-bottom: 0;
-        }
-
-        .label {
-            padding: 17px 20px;
-            width: 42%;
-            font-size: 13px;
-            color: #667085;
-        }
-
-        .value {
-            padding: 17px 20px;
-            text-align: right;
-            font-size: 14px;
-            font-weight: 700;
-            color: #172033;
-            word-break: break-word;
-        }
-
-        .price {
-            color: #2563eb;
-            font-size: 17px;
-        }
-
-        .info {
-            margin-top: 25px;
-            padding: 18px 20px;
-            border-radius: 10px;
-            background: #f8fafc;
-            border: 1px solid #edf1f6;
-        }
-
-        .info-title {
-            margin: 0 0 7px;
-            font-size: 13px;
-            font-weight: 700;
-            color: #344054;
-        }
-
-        .info-text {
-            margin: 0;
-            font-size: 13px;
-            line-height: 1.7;
-            color: #667085;
-        }
-
-        .footer {
-            padding: 28px 38px;
-            text-align: center;
-            background: #f8fafc;
-            border-top: 1px solid #edf1f6;
-        }
-
-        .footer-brand {
-            margin-bottom: 7px;
-            font-size: 14px;
-            font-weight: 700;
-            color: #344054;
-        }
-
-        .footer-text {
-            margin: 0;
-            font-size: 12px;
-            line-height: 1.7;
-            color: #98a2b3;
-        }
-
-        @media only screen and (max-width: 600px) {
-
-            .wrapper {
-                padding: 20px 10px;
-            }
-
-            .header {
-                padding: 24px;
-            }
-
-            .content {
-                padding: 30px 24px;
-            }
-
-            .footer {
-                padding: 24px;
-            }
-
-            .heading {
-                font-size: 25px;
-            }
-
-            .label,
-            .value {
-                padding: 14px 12px;
-                font-size: 12px;
-            }
-
-            .logo {
-                font-size: 22px;
-            }
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Subscription Activated</title>
 </head>
 
-<body>
+<body style="
+margin:0;
+padding:0;
+background:#f4f7fb;
+font-family:Arial,Helvetica,sans-serif;
+color:#172033;
+">
 
-<table width="100%" cellpadding="0" cellspacing="0" class="wrapper">
-    <tr>
-        <td align="center">
+<div style="padding:45px 15px;">
 
-            <table width="100%" cellpadding="0" cellspacing="0" class="container">
+<div style="
+width:100%;
+max-width:650px;
+margin:auto;
+background:#ffffff;
+border:1px solid #e8edf4;
+border-radius:20px;
+overflow:hidden;
+">
 
-                <!-- BRAND -->
-                <tr>
-                    <td class="header">
+<div style="
+padding:28px 38px;
+border-bottom:1px solid #edf1f6;
+">
 
-                        <div class="logo">
-                            Health<span>Com</span>
-                        </div>
+<div style="
+font-size:25px;
+font-weight:800;
+color:#10233f;
+">
+Health<span style="color:#2563eb;">Com</span>
+</div>
 
-                    </td>
-                </tr>
+</div>
 
-                <!-- MAIN -->
-                <tr>
-                    <td class="content">
+<div style="padding:42px 38px;">
 
-                        <div class="icon">
-                            ✓
-                        </div>
+<div style="
+width:58px;
+height:58px;
+line-height:58px;
+text-align:center;
+border-radius:50%;
+background:#ecfdf3;
+color:#16a34a;
+font-size:28px;
+font-weight:bold;
+">
+✓
+</div>
 
-                        <h1 class="heading">
-                            Subscription Activated
-                        </h1>
+<h1 style="
+margin:24px 0 10px;
+font-size:30px;
+color:#111827;
+">
+Subscription Activated
+</h1>
 
-                        <p class="intro">
-                            Hello Dr. ${firstName},
-                            <br><br>
-                            Your HealthCom subscription payment has been successfully
-                            processed. Your plan is now active and ready to use.
-                        </p>
+<p style="
+margin:0;
+font-size:15px;
+line-height:1.8;
+color:#667085;
+">
+Hello ${name},
+<br><br>
 
-                        <div class="badge">
-                            PAYMENT SUCCESSFUL
-                        </div>
+Your HealthCom subscription payment has been
+successfully processed. Your plan is now active
+and ready to use.
+</p>
 
-                        <!-- DETAILS -->
-                        <div class="card">
+<div style="
+display:inline-block;
+margin-top:20px;
+padding:8px 14px;
+border-radius:30px;
+background:#ecfdf3;
+color:#15803d;
+font-size:11px;
+font-weight:800;
+">
+PAYMENT SUCCESSFUL
+</div>
 
-                            <div class="card-title">
-                                Subscription Summary
-                            </div>
+<div style="
+margin-top:32px;
+border:1px solid #e6eaf0;
+border-radius:14px;
+overflow:hidden;
+">
 
-                            <table width="100%" cellpadding="0" cellspacing="0">
+<div style="
+padding:17px 20px;
+background:#f8fafc;
+border-bottom:1px solid #e6eaf0;
+font-size:14px;
+font-weight:700;
+">
+Subscription Summary
+</div>
 
-                                <tr class="row">
-                                    <td class="label">
-                                        Subscription Plan
-                                    </td>
+<table width="100%" cellpadding="0" cellspacing="0">
 
-                                    <td class="value">
-                                        ${planName}
-                                    </td>
-                                </tr>
+<tr>
+<td style="padding:17px 20px;color:#667085;">
+Subscription Plan
+</td>
 
-                                <tr class="row">
-                                    <td class="label">
-                                        Amount Paid
-                                    </td>
+<td style="
+padding:17px 20px;
+text-align:right;
+font-weight:700;
+">
+${plan}
+</td>
+</tr>
 
-                                    <td class="value price">
-                                        ₹${amount}
-                                    </td>
-                                </tr>
+<tr>
+<td style="padding:17px 20px;color:#667085;">
+Amount Paid
+</td>
 
-                                <tr class="row">
-                                    <td class="label">
-                                        Transaction ID
-                                    </td>
+<td style="
+padding:17px 20px;
+text-align:right;
+font-weight:700;
+color:#2563eb;
+font-size:17px;
+">
+₹${price}
+</td>
+</tr>
 
-                                    <td class="value">
-                                        ${transactionId}
-                                    </td>
-                                </tr>
+<tr>
+<td style="padding:17px 20px;color:#667085;">
+Transaction ID
+</td>
 
-                                <tr class="row">
-                                    <td class="label">
-                                        Valid Until
-                                    </td>
+<td style="
+padding:17px 20px;
+text-align:right;
+font-weight:700;
+word-break:break-word;
+">
+${transaction}
+</td>
+</tr>
 
-                                    <td class="value">
-                                        ${new Date(endDate).toLocaleDateString("en-IN")}
-                                    </td>
-                                </tr>
+<tr>
+<td style="padding:17px 20px;color:#667085;">
+Valid Until
+</td>
 
-                            </table>
+<td style="
+padding:17px 20px;
+text-align:right;
+font-weight:700;
+">
+${validUntil}
+</td>
+</tr>
 
-                        </div>
-
-                        <!-- INFO -->
-                        <div class="info">
-
-                            <p class="info-title">
-                                Your subscription is active
-                            </p>
-
-                            <p class="info-text">
-                                You can continue using HealthCom's healthcare tools
-                                and services according to your selected subscription
-                                plan.
-                            </p>
-
-                        </div>
-
-                        <p style="
-                            margin: 26px 0 0;
-                            font-size: 13px;
-                            line-height: 1.7;
-                            color: #667085;
-                        ">
-                            Please keep this email for your records. If you need help
-                            regarding your subscription or payment, please contact
-                            the HealthCom support team.
-                        </p>
-
-                    </td>
-                </tr>
-
-                <!-- FOOTER -->
-                <tr>
-                    <td class="footer">
-
-                        <div class="footer-brand">
-                            HealthCom
-                        </div>
-
-                        <p class="footer-text">
-                            Thank you for choosing HealthCom.
-                            <br>
-                            Better healthcare, connected.
-                        </p>
-
-                    </td>
-                </tr>
-
-            </table>
-
-        </td>
-    </tr>
 </table>
+
+</div>
+
+<div style="
+margin-top:25px;
+padding:18px 20px;
+border-radius:10px;
+background:#f8fafc;
+border:1px solid #edf1f6;
+">
+
+<p style="
+margin:0 0 7px;
+font-size:13px;
+font-weight:700;
+color:#344054;
+">
+Your subscription is active
+</p>
+
+<p style="
+margin:0;
+font-size:13px;
+line-height:1.7;
+color:#667085;
+">
+You can continue using HealthCom's healthcare
+tools and services according to your selected
+subscription plan.
+</p>
+
+</div>
+
+<p style="
+margin-top:26px;
+font-size:13px;
+line-height:1.7;
+color:#667085;
+">
+Please keep this email for your records.
+If you need help regarding your subscription
+or payment, please contact the HealthCom support team.
+</p>
+
+</div>
+
+<div style="
+padding:28px 38px;
+text-align:center;
+background:#f8fafc;
+border-top:1px solid #edf1f6;
+">
+
+<div style="
+margin-bottom:7px;
+font-size:14px;
+font-weight:700;
+color:#344054;
+">
+HealthCom
+</div>
+
+<p style="
+margin:0;
+font-size:12px;
+line-height:1.7;
+color:#98a2b3;
+">
+Thank you for choosing HealthCom.
+<br>
+Better healthcare, connected.
+</p>
+
+</div>
+
+</div>
+
+</div>
 
 </body>
 </html>
-        `,
+`,
   });
+}
 
-};
-
-
-// ======================================================
+// =========================================================
 // SUBSCRIPTION PAYMENT FAILED EMAIL
-// ======================================================
+// =========================================================
 
-const sendSubscriptionFailureEmail = async ({
+async function sendSubscriptionFailureEmail({
   email,
   firstName,
   planName,
   transactionId,
-}) => {
+}) {
+  const name = safeValue(firstName, "Doctor");
+  const plan = safeValue(planName);
+  const transaction = safeValue(transactionId);
 
-  await transporter.sendMail({
-    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
+  return sendEmail({
     to: email,
+
     subject: "HealthCom Payment Failed",
+
+    text: `Hello ${firstName || "Doctor"},
+
+We couldn't complete your HealthCom subscription payment.
+
+Subscription Plan: ${planName}
+Transaction ID: ${transactionId}
+Payment Status: Failed
+
+Please try the payment again using your preferred payment method.
+
+If the amount was deducted, please allow time for the payment provider to reverse the transaction.`,
+
     html: `
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-    <style>
-        body {
-            margin: 0;
-            padding: 0;
-            background: #f4f7fb;
-            font-family: Arial, Helvetica, sans-serif;
-            color: #172033;
-        }
-
-        table {
-            border-collapse: collapse;
-        }
-
-        .wrapper {
-            width: 100%;
-            padding: 45px 15px;
-            background: #f4f7fb;
-        }
-
-        .container {
-            width: 100%;
-            max-width: 650px;
-            margin: auto;
-            background: #ffffff;
-            border: 1px solid #e8edf4;
-            border-radius: 20px;
-            overflow: hidden;
-        }
-
-        .header {
-            padding: 28px 38px;
-            border-bottom: 1px solid #edf1f6;
-            background: #ffffff;
-        }
-
-        .logo {
-            font-size: 25px;
-            font-weight: 800;
-            letter-spacing: -0.5px;
-            color: #10233f;
-        }
-
-        .logo span {
-            color: #2563eb;
-        }
-
-        .content {
-            padding: 42px 38px;
-        }
-
-        .icon {
-            width: 58px;
-            height: 58px;
-            line-height: 58px;
-            text-align: center;
-            border-radius: 50%;
-            background: #fff1f2;
-            color: #dc2626;
-            font-size: 28px;
-            font-weight: bold;
-        }
-
-        .heading {
-            margin: 24px 0 10px;
-            font-size: 30px;
-            line-height: 1.25;
-            color: #111827;
-        }
-
-        .intro {
-            margin: 0;
-            font-size: 15px;
-            line-height: 1.8;
-            color: #667085;
-        }
-
-        .badge {
-            display: inline-block;
-            margin-top: 20px;
-            padding: 8px 14px;
-            border-radius: 30px;
-            background: #fff1f2;
-            color: #be123c;
-            font-size: 11px;
-            font-weight: 800;
-            letter-spacing: 0.6px;
-        }
-
-        .card {
-            margin-top: 32px;
-            border: 1px solid #e6eaf0;
-            border-radius: 14px;
-            overflow: hidden;
-        }
-
-        .card-title {
-            padding: 17px 20px;
-            background: #f8fafc;
-            border-bottom: 1px solid #e6eaf0;
-            font-size: 14px;
-            font-weight: 700;
-            color: #344054;
-        }
-
-        .row {
-            border-bottom: 1px solid #eef1f5;
-        }
-
-        .row:last-child {
-            border-bottom: 0;
-        }
-
-        .label {
-            padding: 17px 20px;
-            width: 42%;
-            font-size: 13px;
-            color: #667085;
-        }
-
-        .value {
-            padding: 17px 20px;
-            text-align: right;
-            font-size: 14px;
-            font-weight: 700;
-            color: #172033;
-            word-break: break-word;
-        }
-
-        .failed {
-            color: #dc2626;
-        }
-
-        .warning {
-            margin-top: 25px;
-            padding: 19px 20px;
-            border-radius: 10px;
-            background: #fff8f8;
-            border: 1px solid #fee2e2;
-        }
-
-        .warning-title {
-            margin: 0 0 7px;
-            font-size: 13px;
-            font-weight: 700;
-            color: #991b1b;
-        }
-
-        .warning-text {
-            margin: 0;
-            font-size: 13px;
-            line-height: 1.7;
-            color: #667085;
-        }
-
-        .next-step {
-            margin-top: 20px;
-            padding: 19px 20px;
-            border-radius: 10px;
-            background: #f8fafc;
-            border: 1px solid #edf1f6;
-        }
-
-        .next-title {
-            margin: 0 0 7px;
-            font-size: 13px;
-            font-weight: 700;
-            color: #344054;
-        }
-
-        .next-text {
-            margin: 0;
-            font-size: 13px;
-            line-height: 1.7;
-            color: #667085;
-        }
-
-        .footer {
-            padding: 28px 38px;
-            text-align: center;
-            background: #f8fafc;
-            border-top: 1px solid #edf1f6;
-        }
-
-        .footer-brand {
-            margin-bottom: 7px;
-            font-size: 14px;
-            font-weight: 700;
-            color: #344054;
-        }
-
-        .footer-text {
-            margin: 0;
-            font-size: 12px;
-            line-height: 1.7;
-            color: #98a2b3;
-        }
-
-        @media only screen and (max-width: 600px) {
-
-            .wrapper {
-                padding: 20px 10px;
-            }
-
-            .header {
-                padding: 24px;
-            }
-
-            .content {
-                padding: 30px 24px;
-            }
-
-            .footer {
-                padding: 24px;
-            }
-
-            .heading {
-                font-size: 25px;
-            }
-
-            .label,
-            .value {
-                padding: 14px 12px;
-                font-size: 12px;
-            }
-
-            .logo {
-                font-size: 22px;
-            }
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Payment Failed</title>
 </head>
 
-<body>
+<body style="
+margin:0;
+padding:0;
+background:#f4f7fb;
+font-family:Arial,Helvetica,sans-serif;
+color:#172033;
+">
 
-<table width="100%" cellpadding="0" cellspacing="0" class="wrapper">
-    <tr>
-        <td align="center">
+<div style="padding:45px 15px;">
 
-            <table width="100%" cellpadding="0" cellspacing="0" class="container">
+<div style="
+width:100%;
+max-width:650px;
+margin:auto;
+background:#ffffff;
+border:1px solid #e8edf4;
+border-radius:20px;
+overflow:hidden;
+">
 
-                <!-- BRAND -->
-                <tr>
-                    <td class="header">
+<div style="
+padding:28px 38px;
+border-bottom:1px solid #edf1f6;
+">
 
-                        <div class="logo">
-                            Health<span>Com</span>
-                        </div>
+<div style="
+font-size:25px;
+font-weight:800;
+color:#10233f;
+">
+Health<span style="color:#2563eb;">Com</span>
+</div>
 
-                    </td>
-                </tr>
+</div>
 
-                <!-- MAIN -->
-                <tr>
-                    <td class="content">
+<div style="padding:42px 38px;">
 
-                        <div class="icon">
-                            !
-                        </div>
+<div style="
+width:58px;
+height:58px;
+line-height:58px;
+text-align:center;
+border-radius:50%;
+background:#fff1f2;
+color:#dc2626;
+font-size:28px;
+font-weight:bold;
+">
+!
+</div>
 
-                        <h1 class="heading">
-                            Payment Unsuccessful
-                        </h1>
+<h1 style="
+margin:24px 0 10px;
+font-size:30px;
+color:#111827;
+">
+Payment Unsuccessful
+</h1>
 
-                        <p class="intro">
-                            Hello Dr. ${firstName},
-                            <br><br>
-                            We couldn't complete your HealthCom subscription payment.
-                            Your selected plan has not been activated from this
-                            transaction.
-                        </p>
+<p style="
+margin:0;
+font-size:15px;
+line-height:1.8;
+color:#667085;
+">
+Hello ${name},
+<br><br>
 
-                        <div class="badge">
-                            PAYMENT FAILED
-                        </div>
+We couldn't complete your HealthCom subscription
+payment. Your selected plan has not been activated
+from this transaction.
+</p>
 
-                        <!-- DETAILS -->
-                        <div class="card">
+<div style="
+display:inline-block;
+margin-top:20px;
+padding:8px 14px;
+border-radius:30px;
+background:#fff1f2;
+color:#be123c;
+font-size:11px;
+font-weight:800;
+">
+PAYMENT FAILED
+</div>
 
-                            <div class="card-title">
-                                Payment Summary
-                            </div>
+<div style="
+margin-top:32px;
+border:1px solid #e6eaf0;
+border-radius:14px;
+overflow:hidden;
+">
 
-                            <table width="100%" cellpadding="0" cellspacing="0">
+<div style="
+padding:17px 20px;
+background:#f8fafc;
+border-bottom:1px solid #e6eaf0;
+font-size:14px;
+font-weight:700;
+">
+Payment Summary
+</div>
 
-                                <tr class="row">
-                                    <td class="label">
-                                        Subscription Plan
-                                    </td>
+<table width="100%" cellpadding="0" cellspacing="0">
 
-                                    <td class="value">
-                                        ${planName}
-                                    </td>
-                                </tr>
+<tr>
+<td style="padding:17px 20px;color:#667085;">
+Subscription Plan
+</td>
 
-                                <tr class="row">
-                                    <td class="label">
-                                        Transaction ID
-                                    </td>
+<td style="
+padding:17px 20px;
+text-align:right;
+font-weight:700;
+">
+${plan}
+</td>
+</tr>
 
-                                    <td class="value">
-                                        ${transactionId}
-                                    </td>
-                                </tr>
+<tr>
+<td style="padding:17px 20px;color:#667085;">
+Transaction ID
+</td>
 
-                                <tr class="row">
-                                    <td class="label">
-                                        Payment Status
-                                    </td>
+<td style="
+padding:17px 20px;
+text-align:right;
+font-weight:700;
+word-break:break-word;
+">
+${transaction}
+</td>
+</tr>
 
-                                    <td class="value failed">
-                                        Failed
-                                    </td>
-                                </tr>
+<tr>
+<td style="padding:17px 20px;color:#667085;">
+Payment Status
+</td>
 
-                            </table>
+<td style="
+padding:17px 20px;
+text-align:right;
+font-weight:700;
+color:#dc2626;
+">
+Failed
+</td>
+</tr>
 
-                        </div>
-
-                        <!-- WARNING -->
-                        <div class="warning">
-
-                            <p class="warning-title">
-                                Important payment information
-                            </p>
-
-                            <p class="warning-text">
-                                If your bank or payment provider has temporarily
-                                deducted the amount, please allow some time for the
-                                transaction to be reversed according to your
-                                payment provider's processing time.
-                            </p>
-
-                        </div>
-
-                        <!-- NEXT STEP -->
-                        <div class="next-step">
-
-                            <p class="next-title">
-                                What should you do?
-                            </p>
-
-                            <p class="next-text">
-                                Please try the payment again using your preferred
-                                payment method. If the problem continues, verify
-                                your payment details or contact HealthCom support.
-                            </p>
-
-                        </div>
-
-                        <p style="
-                            margin: 26px 0 0;
-                            font-size: 13px;
-                            line-height: 1.7;
-                            color: #667085;
-                        ">
-                            Please keep your transaction ID for reference. It can
-                            help our support team quickly locate your payment attempt.
-                        </p>
-
-                    </td>
-                </tr>
-
-                <!-- FOOTER -->
-                <tr>
-                    <td class="footer">
-
-                        <div class="footer-brand">
-                            HealthCom
-                        </div>
-
-                        <p class="footer-text">
-                            Need help with your payment?
-                            <br>
-                            The HealthCom team is here to assist you.
-                        </p>
-
-                    </td>
-                </tr>
-
-            </table>
-
-        </td>
-    </tr>
 </table>
+
+</div>
+
+<div style="
+margin-top:25px;
+padding:19px 20px;
+border-radius:10px;
+background:#fff8f8;
+border:1px solid #fee2e2;
+">
+
+<p style="
+margin:0 0 7px;
+font-size:13px;
+font-weight:700;
+color:#991b1b;
+">
+Important payment information
+</p>
+
+<p style="
+margin:0;
+font-size:13px;
+line-height:1.7;
+color:#667085;
+">
+If your bank or payment provider has temporarily
+deducted the amount, please allow some time for
+the transaction to be reversed according to your
+payment provider's processing time.
+</p>
+
+</div>
+
+<div style="
+margin-top:20px;
+padding:19px 20px;
+border-radius:10px;
+background:#f8fafc;
+border:1px solid #edf1f6;
+">
+
+<p style="
+margin:0 0 7px;
+font-size:13px;
+font-weight:700;
+color:#344054;
+">
+What should you do?
+</p>
+
+<p style="
+margin:0;
+font-size:13px;
+line-height:1.7;
+color:#667085;
+">
+Please try the payment again using your preferred
+payment method. If the problem continues, verify
+your payment details or contact HealthCom support.
+</p>
+
+</div>
+
+<p style="
+margin-top:26px;
+font-size:13px;
+line-height:1.7;
+color:#667085;
+">
+Please keep your transaction ID for reference.
+It can help our support team quickly locate your
+payment attempt.
+</p>
+
+</div>
+
+<div style="
+padding:28px 38px;
+text-align:center;
+background:#f8fafc;
+border-top:1px solid #edf1f6;
+">
+
+<div style="
+margin-bottom:7px;
+font-size:14px;
+font-weight:700;
+color:#344054;
+">
+HealthCom
+</div>
+
+<p style="
+margin:0;
+font-size:12px;
+line-height:1.7;
+color:#98a2b3;
+">
+Need help with your payment?
+<br>
+The HealthCom team is here to assist you.
+</p>
+
+</div>
+
+</div>
+
+</div>
 
 </body>
 </html>
-        `,
+`,
   });
-
-};
-
+}
 
 // =========================================================
 // EXPORTS
