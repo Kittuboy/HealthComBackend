@@ -1,90 +1,22 @@
-const nodemailer = require("nodemailer");
+// =========================================================
+// HEALTHCOM EMAIL SERVICE
+// BREVO HTTP API
+// =========================================================
+
+const BREVO_API_URL = "https://api.brevo.com/v3/smtp/email";
 
 // =========================================================
-// ENVIRONMENT CONFIGURATION
-// =========================================================
-
-const BREVO_SMTP_USER = process.env.BREVO_SMTP_USER;
-const BREVO_SMTP_KEY = process.env.BREVO_SMTP_KEY;
-const EMAIL_FROM = process.env.EMAIL_FROM;
-
-// =========================================================
-// VALIDATE EMAIL CONFIGURATION
+// ENVIRONMENT VALIDATION
 // =========================================================
 
 function validateEmailConfig() {
-  const missing = [];
-
-  if (!BREVO_SMTP_USER) {
-    missing.push("BREVO_SMTP_USER");
+  if (!process.env.BREVO_API_KEY) {
+    throw new Error("BREVO_API_KEY is missing");
   }
 
-  if (!BREVO_SMTP_KEY) {
-    missing.push("BREVO_SMTP_KEY");
+  if (!process.env.EMAIL_FROM) {
+    throw new Error("EMAIL_FROM is missing");
   }
-
-  if (!EMAIL_FROM) {
-    missing.push("EMAIL_FROM");
-  }
-
-  if (missing.length > 0) {
-    console.error("==============================================");
-    console.error("❌ BREVO EMAIL CONFIGURATION ERROR");
-    console.error("Missing environment variables:");
-    console.error(missing.join(", "));
-    console.error("==============================================");
-
-    return false;
-  }
-
-  return true;
-}
-
-const emailConfigValid = validateEmailConfig();
-
-// =========================================================
-// BREVO SMTP TRANSPORTER
-// =========================================================
-
-const transporter = nodemailer.createTransport({
-  host: "smtp-relay.brevo.com",
-  port: 587,
-  secure: false,
-
-  auth: {
-    user: BREVO_SMTP_USER,
-    pass: BREVO_SMTP_KEY,
-  },
-
-  connectionTimeout: 10000,
-  greetingTimeout: 10000,
-  socketTimeout: 20000,
-
-  pool: true,
-  maxConnections: 5,
-  maxMessages: 100,
-});
-
-// =========================================================
-// VERIFY BREVO SMTP CONNECTION
-// =========================================================
-
-if (emailConfigValid) {
-  transporter.verify((error, success) => {
-    if (error) {
-      console.error("==============================================");
-      console.error("❌ BREVO SMTP CONNECTION FAILED");
-      console.error(error.message || error);
-      console.error("==============================================");
-      return;
-    }
-
-    console.log("==============================================");
-    console.log("✅ BREVO SMTP CONNECTED SUCCESSFULLY");
-    console.log(`📧 SMTP User: ${BREVO_SMTP_USER}`);
-    console.log(`📨 From Email: ${EMAIL_FROM}`);
-    console.log("==============================================");
-  });
 }
 
 // =========================================================
@@ -108,7 +40,7 @@ function escapeHtml(value) {
 // SAFE VALUE
 // =========================================================
 
-function safeValue(value, fallback = "Not provided") {
+function safeValue(value, fallback = "") {
   if (
     value === null ||
     value === undefined ||
@@ -126,7 +58,7 @@ function safeValue(value, fallback = "Not provided") {
 
 function formatDate(date) {
   if (!date) {
-    return "Not provided";
+    return "N/A";
   }
 
   try {
@@ -137,7 +69,7 @@ function formatDate(date) {
 }
 
 // =========================================================
-// COMMON MAIL SENDER
+// BREVO HTTP API EMAIL SENDER
 // =========================================================
 
 async function sendEmail({
@@ -146,43 +78,89 @@ async function sendEmail({
   text,
   html,
 }) {
-  if (!emailConfigValid) {
-    throw new Error(
-      "Email service is not configured. Check BREVO_SMTP_USER, BREVO_SMTP_KEY and EMAIL_FROM."
-    );
-  }
-
-  if (!to) {
-    throw new Error("Recipient email address is required.");
-  }
-
-  if (!subject) {
-    throw new Error("Email subject is required.");
-  }
-
   try {
-    const info = await transporter.sendMail({
-      from: `"HealthCom" <${EMAIL_FROM}>`,
-      to,
-      subject,
-      text,
-      html,
+    validateEmailConfig();
+
+    if (!to) {
+      throw new Error("Recipient email is missing");
+    }
+
+    if (!subject) {
+      throw new Error("Email subject is missing");
+    }
+
+    const response = await fetch(BREVO_API_URL, {
+      method: "POST",
+
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": process.env.BREVO_API_KEY,
+        Accept: "application/json",
+      },
+
+      body: JSON.stringify({
+        sender: {
+          name: "HealthCom",
+          email: process.env.EMAIL_FROM,
+        },
+
+        to: [
+          {
+            email: to,
+          },
+        ],
+
+        subject,
+
+        textContent:
+          text || "This email requires an HTML-compatible email client.",
+
+        htmlContent:
+          html ||
+          `<p>${escapeHtml(
+            text || "This email requires an HTML-compatible email client."
+          )}</p>`,
+      }),
     });
+
+    let data = {};
+
+    try {
+      data = await response.json();
+    } catch (jsonError) {
+      data = {};
+    }
+
+    if (!response.ok) {
+      console.error("==============================================");
+      console.error("❌ BREVO API EMAIL FAILED");
+      console.error("📧 To:", to);
+      console.error("📌 Subject:", subject);
+      console.error("❌ HTTP Status:", response.status);
+      console.error("❌ Response:", data);
+      console.error("==============================================");
+
+      throw new Error(
+        data?.message ||
+          data?.code ||
+          `Brevo API request failed with status ${response.status}`
+      );
+    }
 
     console.log("==============================================");
     console.log("✅ EMAIL SENT SUCCESSFULLY");
-    console.log(`📧 To: ${to}`);
-    console.log(`📌 Subject: ${subject}`);
-    console.log(`🆔 Message ID: ${info.messageId}`);
+    console.log("📧 To:", to);
+    console.log("📌 Subject:", subject);
+    console.log("📨 Message ID:", data?.messageId || "N/A");
     console.log("==============================================");
 
-    return info;
+    return data;
   } catch (error) {
     console.error("==============================================");
     console.error("❌ EMAIL SENDING FAILED");
-    console.error(`📧 To: ${to}`);
-    console.error(`📌 Subject: ${subject}`);
-    console.error(`❌ Error: ${error.message}`);
+    console.error("📧 To:", to || "Unknown");
+    console.error("📌 Subject:", subject || "Unknown");
+    console.error("❌ Error:", error.message);
     console.error("==============================================");
 
     throw error;
@@ -201,146 +179,127 @@ async function sendVerificationOtp({
   const name = safeValue(firstName, "User");
   const safeOtp = safeValue(otp);
 
-  return sendEmail({
-    to: email,
-
-    subject: "Verify your HealthCom account",
-
-    text: `Hello ${firstName || "User"},
+  const text = `Hello ${firstName || "User"},
 
 Your HealthCom verification OTP is: ${otp}
 
 This OTP expires in 5 minutes.
 
-If you did not create this account, please ignore this email.`,
+If you did not create this account, please ignore this email.`;
 
-    html: `
+  const html = `
 <!DOCTYPE html>
 <html>
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Verify HealthCom Account</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Verify your HealthCom account</title>
 </head>
 
 <body style="
-margin:0;
-padding:0;
-background:#f3f7fb;
-font-family:Arial,Helvetica,sans-serif;
-color:#1f2937;
+  margin:0;
+  padding:0;
+  background:#f3f7fb;
+  font-family:Arial,Helvetica,sans-serif;
+  color:#333;
 ">
 
-<div style="
-max-width:600px;
-margin:40px auto;
-background:#ffffff;
-border:1px solid #e5e7eb;
-border-radius:16px;
-overflow:hidden;
-">
+  <div style="
+    width:100%;
+    padding:35px 15px;
+    box-sizing:border-box;
+  ">
 
-<div style="
-background:#0878d1;
-padding:28px;
-color:#ffffff;
-">
+    <div style="
+      max-width:600px;
+      margin:auto;
+      background:#ffffff;
+      border:1px solid #e5eaf1;
+      border-radius:16px;
+      padding:35px;
+    ">
 
-<h1 style="margin:0;font-size:25px;">
-HealthCom
-</h1>
+      <h1 style="
+        margin:0 0 25px;
+        color:#0878d1;
+      ">
+        HealthCom
+      </h1>
 
-<p style="
-margin:8px 0 0;
-font-size:14px;
-opacity:.9;
-">
-Email Verification
-</p>
+      <p style="font-size:16px;">
+        Hello ${name},
+      </p>
 
-</div>
+      <p style="
+        color:#4b5563;
+        line-height:1.7;
+      ">
+        Your email verification OTP is:
+      </p>
 
-<div style="padding:32px;">
+      <div style="
+        margin:25px 0;
+        padding:20px;
+        text-align:center;
+        background:#f0f7ff;
+        border:1px solid #d7eaff;
+        border-radius:12px;
+      ">
 
-<p style="font-size:16px;">
-Hello ${name},
-</p>
+        <div style="
+          color:#0878d1;
+          font-size:32px;
+          font-weight:700;
+          letter-spacing:8px;
+        ">
+          ${safeOtp}
+        </div>
 
-<p style="
-color:#4b5563;
-line-height:1.7;
-">
-Thank you for creating your HealthCom account.
-Please use the OTP below to verify your email address.
-</p>
+      </div>
 
-<div style="
-margin:28px 0;
-padding:22px;
-background:#f0f7ff;
-border:1px solid #dbeafe;
-border-radius:12px;
-text-align:center;
-">
+      <p style="
+        color:#6b7280;
+        line-height:1.7;
+      ">
+        This OTP expires in 5 minutes.
+      </p>
 
-<div style="
-font-size:12px;
-color:#64748b;
-font-weight:bold;
-text-transform:uppercase;
-letter-spacing:1px;
-">
-Verification OTP
-</div>
+      <p style="
+        color:#6b7280;
+        line-height:1.7;
+      ">
+        If you did not create this account,
+        please ignore this email.
+      </p>
 
-<div style="
-margin-top:12px;
-font-size:32px;
-font-weight:bold;
-letter-spacing:8px;
-color:#0878d1;
-">
-${safeOtp}
-</div>
+      <hr style="
+        border:0;
+        border-top:1px solid #edf1f5;
+        margin:30px 0;
+      ">
 
-</div>
+      <p style="
+        margin:0;
+        text-align:center;
+        color:#9ca3af;
+        font-size:12px;
+      ">
+        © ${new Date().getFullYear()} HealthCom. All rights reserved.
+      </p>
 
-<p style="
-font-size:14px;
-color:#64748b;
-line-height:1.6;
-">
-This OTP will expire in <strong>5 minutes</strong>.
-</p>
+    </div>
 
-<p style="
-font-size:13px;
-color:#94a3b8;
-line-height:1.6;
-">
-If you did not create this account, please ignore this email.
-</p>
-
-</div>
-
-<div style="
-padding:20px;
-background:#f8fafc;
-border-top:1px solid #edf1f5;
-text-align:center;
-font-size:12px;
-color:#94a3b8;
-">
-
-© ${new Date().getFullYear()} HealthCom. All rights reserved.
-
-</div>
-
-</div>
+  </div>
 
 </body>
 </html>
-`,
+`;
+
+  return sendEmail({
+    to: email,
+    subject: "Verify your HealthCom account",
+    text,
+    html,
   });
 }
 
@@ -356,134 +315,134 @@ async function sendLoginOtp({
   const name = safeValue(firstName, "User");
   const safeOtp = safeValue(otp);
 
-  return sendEmail({
-    to: email,
-
-    subject: "HealthCom Login OTP",
-
-    text: `Hello ${firstName || "User"},
+  const text = `Hello ${firstName || "User"},
 
 Your HealthCom login OTP is: ${otp}
 
 This OTP expires in 5 minutes.
 
-If you did not request this login, please ignore this email.`,
+If you did not request this login, please ignore this email.`;
 
-    html: `
+  const html = `
 <!DOCTYPE html>
 <html>
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>HealthCom Login OTP</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HealthCom Login OTP</title>
 </head>
 
 <body style="
-margin:0;
-padding:0;
-background:#f3f7fb;
-font-family:Arial,Helvetica,sans-serif;
+  margin:0;
+  padding:0;
+  background:#f3f7fb;
+  font-family:Arial,Helvetica,sans-serif;
+  color:#333;
 ">
 
-<div style="
-max-width:600px;
-margin:40px auto;
-background:#ffffff;
-border:1px solid #e5e7eb;
-border-radius:16px;
-overflow:hidden;
-">
+  <div style="
+    width:100%;
+    padding:35px 15px;
+    box-sizing:border-box;
+  ">
 
-<div style="
-background:#0878d1;
-padding:28px;
-color:#ffffff;
-">
+    <div style="
+      max-width:600px;
+      margin:auto;
+      background:#ffffff;
+      border:1px solid #e5eaf1;
+      border-radius:16px;
+      padding:35px;
+    ">
 
-<h1 style="margin:0;">
-HealthCom
-</h1>
+      <h1 style="
+        margin:0;
+        color:#0878d1;
+      ">
+        HealthCom
+      </h1>
 
-<p style="margin:8px 0 0;">
-Login Verification
-</p>
+      <h2 style="
+        color:#111827;
+        margin-top:25px;
+      ">
+        Login Verification
+      </h2>
 
-</div>
+      <p style="font-size:16px;">
+        Hello ${name},
+      </p>
 
-<div style="padding:32px;">
+      <p style="
+        color:#4b5563;
+        line-height:1.7;
+      ">
+        Your HealthCom login OTP is:
+      </p>
 
-<p>Hello ${name},</p>
+      <div style="
+        margin:25px 0;
+        padding:20px;
+        text-align:center;
+        background:#f0f7ff;
+        border:1px solid #d7eaff;
+        border-radius:12px;
+      ">
 
-<p style="
-color:#4b5563;
-line-height:1.7;
-">
-Someone is attempting to log in to your HealthCom account.
-Use the OTP below to continue.
-</p>
+        <div style="
+          color:#0878d1;
+          font-size:32px;
+          font-weight:700;
+          letter-spacing:8px;
+        ">
+          ${safeOtp}
+        </div>
 
-<div style="
-margin:28px 0;
-padding:22px;
-background:#f0f7ff;
-border:1px solid #dbeafe;
-border-radius:12px;
-text-align:center;
-">
+      </div>
 
-<div style="
-font-size:12px;
-color:#64748b;
-font-weight:bold;
-">
-LOGIN OTP
-</div>
+      <p style="
+        color:#6b7280;
+        line-height:1.7;
+      ">
+        This OTP expires in 5 minutes.
+      </p>
 
-<div style="
-margin-top:12px;
-font-size:32px;
-font-weight:bold;
-letter-spacing:8px;
-color:#0878d1;
-">
-${safeOtp}
-</div>
+      <p style="
+        color:#6b7280;
+        line-height:1.7;
+      ">
+        If you did not request this login,
+        please ignore this email.
+      </p>
 
-</div>
+      <hr style="
+        border:0;
+        border-top:1px solid #edf1f5;
+        margin:30px 0;
+      ">
 
-<p style="
-font-size:14px;
-color:#64748b;
-">
-This OTP expires in <strong>5 minutes</strong>.
-</p>
+      <p style="
+        margin:0;
+        text-align:center;
+        color:#9ca3af;
+        font-size:12px;
+      ">
+        © ${new Date().getFullYear()} HealthCom. All rights reserved.
+      </p>
 
-<p style="
-font-size:13px;
-color:#94a3b8;
-">
-If you did not request this login, please ignore this email.
-</p>
+    </div>
 
-</div>
-
-<div style="
-padding:20px;
-background:#f8fafc;
-text-align:center;
-font-size:12px;
-color:#94a3b8;
-">
-
-© ${new Date().getFullYear()} HealthCom
-
-</div>
-
-</div>
+  </div>
 
 </body>
 </html>
-`,
+`;
+
+  return sendEmail({
+    to: email,
+    subject: "HealthCom Login OTP",
+    text,
+    html,
   });
 }
 
@@ -499,134 +458,126 @@ async function sendPasswordResetOtp({
   const name = safeValue(firstName, "User");
   const safeOtp = safeValue(otp);
 
-  return sendEmail({
-    to: email,
-
-    subject: "HealthCom Password Reset OTP",
-
-    text: `Hello ${firstName || "User"},
+  const text = `Hello ${firstName || "User"},
 
 Your HealthCom password reset OTP is: ${otp}
 
 This OTP expires in 5 minutes.
 
-If you did not request a password reset, please ignore this email.`,
+If you did not request a password reset, please ignore this email.`;
 
-    html: `
+  const html = `
 <!DOCTYPE html>
 <html>
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>HealthCom Password Reset</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HealthCom Password Reset</title>
 </head>
 
 <body style="
-margin:0;
-padding:0;
-background:#f3f7fb;
-font-family:Arial,Helvetica,sans-serif;
+  margin:0;
+  padding:0;
+  background:#f3f7fb;
+  font-family:Arial,Helvetica,sans-serif;
+  color:#333;
 ">
 
-<div style="
-max-width:600px;
-margin:40px auto;
-background:#ffffff;
-border:1px solid #e5e7eb;
-border-radius:16px;
-overflow:hidden;
-">
+  <div style="
+    width:100%;
+    padding:35px 15px;
+  ">
 
-<div style="
-background:#0878d1;
-padding:28px;
-color:#ffffff;
-">
+    <div style="
+      max-width:600px;
+      margin:auto;
+      background:#ffffff;
+      border:1px solid #e5eaf1;
+      border-radius:16px;
+      padding:35px;
+    ">
 
-<h1 style="margin:0;">
-HealthCom
-</h1>
+      <h1 style="color:#0878d1;">
+        HealthCom
+      </h1>
 
-<p style="margin:8px 0 0;">
-Password Reset
-</p>
+      <h2 style="color:#111827;">
+        Password Reset
+      </h2>
 
-</div>
+      <p>
+        Hello ${name},
+      </p>
 
-<div style="padding:32px;">
+      <p style="
+        color:#4b5563;
+        line-height:1.7;
+      ">
+        Your HealthCom password reset OTP is:
+      </p>
 
-<p>Hello ${name},</p>
+      <div style="
+        margin:25px 0;
+        padding:20px;
+        text-align:center;
+        background:#f0f7ff;
+        border:1px solid #d7eaff;
+        border-radius:12px;
+      ">
 
-<p style="
-color:#4b5563;
-line-height:1.7;
-">
-We received a request to reset your HealthCom account password.
-Use the OTP below to continue.
-</p>
+        <div style="
+          color:#0878d1;
+          font-size:32px;
+          font-weight:700;
+          letter-spacing:8px;
+        ">
+          ${safeOtp}
+        </div>
 
-<div style="
-margin:28px 0;
-padding:22px;
-background:#f0f7ff;
-border:1px solid #dbeafe;
-border-radius:12px;
-text-align:center;
-">
+      </div>
 
-<div style="
-font-size:12px;
-color:#64748b;
-font-weight:bold;
-">
-PASSWORD RESET OTP
-</div>
+      <p style="
+        color:#6b7280;
+        line-height:1.7;
+      ">
+        This OTP expires in 5 minutes.
+      </p>
 
-<div style="
-margin-top:12px;
-font-size:32px;
-font-weight:bold;
-letter-spacing:8px;
-color:#0878d1;
-">
-${safeOtp}
-</div>
+      <p style="
+        color:#6b7280;
+        line-height:1.7;
+      ">
+        If you did not request a password reset,
+        please ignore this email.
+      </p>
 
-</div>
+      <hr style="
+        border:0;
+        border-top:1px solid #edf1f5;
+        margin:30px 0;
+      ">
 
-<p style="
-font-size:14px;
-color:#64748b;
-">
-This OTP expires in <strong>5 minutes</strong>.
-</p>
+      <p style="
+        text-align:center;
+        color:#9ca3af;
+        font-size:12px;
+      ">
+        © ${new Date().getFullYear()} HealthCom. All rights reserved.
+      </p>
 
-<p style="
-font-size:13px;
-color:#94a3b8;
-">
-If you did not request a password reset, please ignore this email.
-</p>
+    </div>
 
-</div>
-
-<div style="
-padding:20px;
-background:#f8fafc;
-text-align:center;
-font-size:12px;
-color:#94a3b8;
-">
-
-© ${new Date().getFullYear()} HealthCom
-
-</div>
-
-</div>
+  </div>
 
 </body>
 </html>
-`,
+`;
+
+  return sendEmail({
+    to: email,
+    subject: "HealthCom Password Reset OTP",
+    text,
+    html,
   });
 }
 
@@ -643,17 +594,12 @@ async function sendPatientAppointmentEmail({
   appointmentTime,
 }) {
   const name = safeValue(firstName, "Patient");
-  const doctor = safeValue(doctorName);
-  const specialization = safeValue(specialty);
-  const date = safeValue(appointmentDate);
-  const time = safeValue(appointmentTime);
+  const doctor = safeValue(doctorName, "Doctor");
+  const spec = safeValue(specialty, "N/A");
+  const date = safeValue(appointmentDate, "N/A");
+  const time = safeValue(appointmentTime, "N/A");
 
-  return sendEmail({
-    to: email,
-
-    subject: "HealthCom - Appointment Request Received",
-
-    text: `Hello ${firstName || "Patient"},
+  const text = `Hello ${firstName || "Patient"},
 
 Your appointment request with ${doctorName} has been submitted successfully.
 
@@ -666,9 +612,9 @@ Your request is currently pending doctor approval.
 
 You will receive another email when the doctor accepts or rejects the request.
 
-Thank you for choosing HealthCom.`,
+Thank you for choosing HealthCom.`;
 
-    html: `
+  const html = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -685,11 +631,15 @@ font-family:Arial,Helvetica,sans-serif;
 color:#1f2937;
 ">
 
-<div style="padding:32px 14px;">
+<div style="
+width:100%;
+padding:32px 14px;
+box-sizing:border-box;
+">
 
 <div style="
 max-width:620px;
-margin:auto;
+margin:0 auto;
 background:#ffffff;
 border:1px solid #e5eaf1;
 border-radius:18px;
@@ -735,7 +685,10 @@ font-weight:700;
 ● Request Pending
 </div>
 
-<p style="margin:24px 0 10px;font-size:16px;">
+<p style="
+margin:24px 0 10px;
+font-size:16px;
+">
 Hello ${name},
 </p>
 
@@ -746,8 +699,8 @@ font-size:15px;
 line-height:1.7;
 ">
 Your appointment request has been sent successfully.
-The doctor will review your request and you will receive
-another notification once a decision is made.
+The doctor will review your request and you will
+receive a separate notification once a decision is made.
 </p>
 
 <div style="
@@ -763,71 +716,26 @@ font-size:13px;
 color:#6b7280;
 font-weight:700;
 text-transform:uppercase;
-letter-spacing:.6px;
 margin-bottom:16px;
 ">
 Appointment Details
 </div>
 
-<table width="100%" cellpadding="0" cellspacing="0">
+<p style="margin:10px 0;">
+<strong>Doctor:</strong> ${doctor}
+</p>
 
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Doctor
-</td>
+<p style="margin:10px 0;">
+<strong>Specialization:</strong> ${spec}
+</p>
 
-<td style="
-padding:10px 0;
-text-align:right;
-font-weight:bold;
-">
-${doctor}
-</td>
-</tr>
+<p style="margin:10px 0;">
+<strong>Date:</strong> ${date}
+</p>
 
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Specialization
-</td>
-
-<td style="
-padding:10px 0;
-text-align:right;
-font-weight:bold;
-">
-${specialization}
-</td>
-</tr>
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Date
-</td>
-
-<td style="
-padding:10px 0;
-text-align:right;
-font-weight:bold;
-">
-${date}
-</td>
-</tr>
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Time
-</td>
-
-<td style="
-padding:10px 0;
-text-align:right;
-font-weight:bold;
-">
-${time}
-</td>
-</tr>
-
-</table>
+<p style="margin:10px 0;">
+<strong>Time:</strong> ${time}
+</p>
 
 </div>
 
@@ -843,10 +751,11 @@ line-height:1.6;
 
 <strong>What happens next?</strong>
 
-<br><br>
+<br>
 
 Your request is waiting for doctor approval.
-Please check your HealthCom account for the latest appointment status.
+Please check your HealthCom account for the latest
+appointment status.
 
 </div>
 
@@ -871,18 +780,21 @@ text-align:center;
 color:#9ca3af;
 font-size:12px;
 ">
-
 © ${new Date().getFullYear()} HealthCom. All rights reserved.
-
 </div>
 
 </div>
-
 </div>
 
 </body>
 </html>
-`,
+`;
+
+  return sendEmail({
+    to: email,
+    subject: "HealthCom - Appointment Request Received",
+    text,
+    html,
   });
 }
 
@@ -901,19 +813,14 @@ async function sendDoctorAppointmentEmail({
   appointmentTime,
 }) {
   const name = safeValue(firstName, "Doctor");
-  const patient = safeValue(patientName);
-  const pEmail = safeValue(patientEmail);
-  const phone = safeValue(patientPhone);
-  const doctor = safeValue(doctorName);
-  const date = safeValue(appointmentDate);
-  const time = safeValue(appointmentTime);
+  const patient = safeValue(patientName, "Patient");
+  const pEmail = safeValue(patientEmail, "Not provided");
+  const phone = safeValue(patientPhone, "Not provided");
+  const doctor = safeValue(doctorName, "Doctor");
+  const date = safeValue(appointmentDate, "N/A");
+  const time = safeValue(appointmentTime, "N/A");
 
-  return sendEmail({
-    to: email,
-
-    subject: "HealthCom - New Appointment Request",
-
-    text: `Hello ${firstName || "Doctor"},
+  const text = `Hello ${firstName || "Doctor"},
 
 You have received a new appointment request through HealthCom.
 
@@ -925,9 +832,9 @@ Doctor: ${doctorName}
 Date: ${appointmentDate}
 Time: ${appointmentTime}
 
-Please open your HealthCom dashboard to review and accept or reject this appointment request.`,
+Please open your HealthCom dashboard to review and accept or reject this appointment request.`;
 
-    html: `
+  const html = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -944,11 +851,15 @@ font-family:Arial,Helvetica,sans-serif;
 color:#1f2937;
 ">
 
-<div style="padding:32px 14px;">
+<div style="
+width:100%;
+padding:32px 14px;
+box-sizing:border-box;
+">
 
 <div style="
 max-width:620px;
-margin:auto;
+margin:0 auto;
 background:#ffffff;
 border:1px solid #e5eaf1;
 border-radius:18px;
@@ -994,7 +905,10 @@ font-weight:700;
 ● Action Required
 </div>
 
-<p style="margin:24px 0 10px;font-size:16px;">
+<p style="
+margin:24px 0 10px;
+font-size:16px;
+">
 Hello ${name},
 </p>
 
@@ -1005,8 +919,8 @@ font-size:15px;
 line-height:1.7;
 ">
 A patient has submitted a new appointment request.
-Please review the details below and choose the appropriate
-action from your HealthCom dashboard.
+Please review the details below and choose the
+appropriate action from your HealthCom dashboard.
 </p>
 
 <div style="
@@ -1027,39 +941,17 @@ margin-bottom:16px;
 Patient Details
 </div>
 
-<table width="100%" cellpadding="0" cellspacing="0">
+<p style="margin:10px 0;">
+<strong>Patient:</strong> ${patient}
+</p>
 
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Patient
-</td>
+<p style="margin:10px 0;">
+<strong>Email:</strong> ${pEmail}
+</p>
 
-<td style="padding:10px 0;text-align:right;font-weight:bold;">
-${patient}
-</td>
-</tr>
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Email
-</td>
-
-<td style="padding:10px 0;text-align:right;font-weight:bold;word-break:break-word;">
-${pEmail}
-</td>
-</tr>
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Phone
-</td>
-
-<td style="padding:10px 0;text-align:right;font-weight:bold;">
-${phone}
-</td>
-</tr>
-
-</table>
+<p style="margin:10px 0;">
+<strong>Phone:</strong> ${phone}
+</p>
 
 </div>
 
@@ -1080,39 +972,17 @@ margin-bottom:16px;
 Appointment Details
 </div>
 
-<table width="100%" cellpadding="0" cellspacing="0">
+<p style="margin:10px 0;">
+<strong>Doctor:</strong> ${doctor}
+</p>
 
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Doctor
-</td>
+<p style="margin:10px 0;">
+<strong>Date:</strong> ${date}
+</p>
 
-<td style="padding:10px 0;text-align:right;font-weight:bold;">
-${doctor}
-</td>
-</tr>
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Date
-</td>
-
-<td style="padding:10px 0;text-align:right;font-weight:bold;">
-${date}
-</td>
-</tr>
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Time
-</td>
-
-<td style="padding:10px 0;text-align:right;font-weight:bold;">
-${time}
-</td>
-</tr>
-
-</table>
+<p style="margin:10px 0;">
+<strong>Time:</strong> ${time}
+</p>
 
 </div>
 
@@ -1129,10 +999,10 @@ line-height:1.6;
 
 <strong>Pending your decision.</strong>
 
-<br><br>
+<br>
 
-Please review this request in your HealthCom dashboard
-and accept or reject it.
+Please review this request in your HealthCom
+dashboard and accept or reject it.
 
 </div>
 
@@ -1141,22 +1011,26 @@ and accept or reject it.
 <div style="
 padding:20px 30px;
 background:#f8fafc;
+border-top:1px solid #edf1f5;
 text-align:center;
 color:#9ca3af;
 font-size:12px;
 ">
-
 © ${new Date().getFullYear()} HealthCom. All rights reserved.
-
 </div>
 
 </div>
-
 </div>
 
 </body>
 </html>
-`,
+`;
+
+  return sendEmail({
+    to: email,
+    subject: "HealthCom - New Appointment Request",
+    text,
+    html,
   });
 }
 
@@ -1173,17 +1047,12 @@ async function sendPatientAppointmentCancellationEmail({
   appointmentTime,
 }) {
   const name = safeValue(firstName, "Patient");
-  const doctor = safeValue(doctorName);
-  const specialization = safeValue(specialty);
-  const date = safeValue(appointmentDate);
-  const time = safeValue(appointmentTime);
+  const doctor = safeValue(doctorName, "Doctor");
+  const spec = safeValue(specialty, "N/A");
+  const date = safeValue(appointmentDate, "N/A");
+  const time = safeValue(appointmentTime, "N/A");
 
-  return sendEmail({
-    to: email,
-
-    subject: "HealthCom - Appointment Cancelled",
-
-    text: `Hello ${firstName || "Patient"},
+  const text = `Hello ${firstName || "Patient"},
 
 Your appointment with ${doctorName} has been cancelled.
 
@@ -1192,9 +1061,9 @@ Specialization: ${specialty}
 Date: ${appointmentDate}
 Time: ${appointmentTime}
 
-You can book another appointment through your HealthCom dashboard.`,
+You can book another appointment through your HealthCom dashboard.`;
 
-    html: `
+  const html = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -1208,6 +1077,7 @@ margin:0;
 padding:0;
 background:#f3f7fb;
 font-family:Arial,Helvetica,sans-serif;
+color:#1f2937;
 ">
 
 <div style="padding:32px 14px;">
@@ -1231,7 +1101,7 @@ color:#ffffff;
 font-size:13px;
 letter-spacing:1.5px;
 text-transform:uppercase;
-font-weight:bold;
+font-weight:700;
 ">
 HealthCom
 </div>
@@ -1255,12 +1125,15 @@ color:#b91c1c;
 border:1px solid #fecaca;
 border-radius:999px;
 font-size:13px;
-font-weight:bold;
+font-weight:700;
 ">
 ● Cancelled
 </div>
 
-<p style="margin:24px 0 10px;font-size:16px;">
+<p style="
+margin:24px 0 10px;
+font-size:16px;
+">
 Hello ${name},
 </p>
 
@@ -1281,59 +1154,17 @@ border:1px solid #fee2e2;
 border-radius:14px;
 ">
 
-<div style="
-font-size:13px;
-color:#991b1b;
-font-weight:bold;
-text-transform:uppercase;
-margin-bottom:16px;
+<h3 style="
+margin:0 0 16px;
+color:#b91c1c;
 ">
 Cancelled Appointment
-</div>
+</h3>
 
-<table width="100%" cellpadding="0" cellspacing="0">
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Doctor
-</td>
-
-<td style="padding:10px 0;text-align:right;font-weight:bold;">
-${doctor}
-</td>
-</tr>
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Specialization
-</td>
-
-<td style="padding:10px 0;text-align:right;font-weight:bold;">
-${specialization}
-</td>
-</tr>
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Date
-</td>
-
-<td style="padding:10px 0;text-align:right;font-weight:bold;">
-${date}
-</td>
-</tr>
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Time
-</td>
-
-<td style="padding:10px 0;text-align:right;font-weight:bold;">
-${time}
-</td>
-</tr>
-
-</table>
+<p><strong>Doctor:</strong> ${doctor}</p>
+<p><strong>Specialization:</strong> ${spec}</p>
+<p><strong>Date:</strong> ${date}</p>
+<p><strong>Time:</strong> ${time}</p>
 
 </div>
 
@@ -1346,16 +1177,13 @@ color:#1e40af;
 font-size:14px;
 line-height:1.6;
 ">
-
 Need another consultation?
-
 You can search for an available doctor and book
 a new appointment from your HealthCom account.
-
 </div>
 
 <p style="
-margin-top:25px;
+margin:25px 0 0;
 color:#6b7280;
 font-size:13px;
 ">
@@ -1370,13 +1198,12 @@ HealthCom Team
 <div style="
 padding:20px 30px;
 background:#f8fafc;
+border-top:1px solid #edf1f5;
 text-align:center;
 color:#9ca3af;
 font-size:12px;
 ">
-
 © ${new Date().getFullYear()} HealthCom. All rights reserved.
-
 </div>
 
 </div>
@@ -1385,7 +1212,13 @@ font-size:12px;
 
 </body>
 </html>
-`,
+`;
+
+  return sendEmail({
+    to: email,
+    subject: "HealthCom - Appointment Cancelled",
+    text,
+    html,
   });
 }
 
@@ -1402,17 +1235,12 @@ async function sendPatientAppointmentAcceptedEmail({
   appointmentTime,
 }) {
   const name = safeValue(firstName, "Patient");
-  const doctor = safeValue(doctorName);
-  const specialization = safeValue(specialty);
-  const date = safeValue(appointmentDate);
-  const time = safeValue(appointmentTime);
+  const doctor = safeValue(doctorName, "Doctor");
+  const spec = safeValue(specialty, "N/A");
+  const date = safeValue(appointmentDate, "N/A");
+  const time = safeValue(appointmentTime, "N/A");
 
-  return sendEmail({
-    to: email,
-
-    subject: "HealthCom - Appointment Accepted",
-
-    text: `Hello ${firstName || "Patient"},
+  const text = `Hello ${firstName || "Patient"},
 
 Good news! Your appointment request has been accepted by the doctor.
 
@@ -1421,9 +1249,9 @@ Specialization: ${specialty}
 Date: ${appointmentDate}
 Time: ${appointmentTime}
 
-Please log in to your HealthCom account to view your appointment details.`,
+Please log in to your HealthCom account to view your appointment details.`;
 
-    html: `
+  const html = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -1437,6 +1265,7 @@ margin:0;
 padding:0;
 background:#f3f7fb;
 font-family:Arial,Helvetica,sans-serif;
+color:#1f2937;
 ">
 
 <div style="padding:32px 14px;">
@@ -1451,7 +1280,7 @@ overflow:hidden;
 ">
 
 <div style="
-background:#16a34a;
+background:#047857;
 padding:30px;
 color:#ffffff;
 ">
@@ -1460,7 +1289,7 @@ color:#ffffff;
 font-size:13px;
 letter-spacing:1.5px;
 text-transform:uppercase;
-font-weight:bold;
+font-weight:700;
 ">
 HealthCom
 </div>
@@ -1484,12 +1313,15 @@ color:#047857;
 border:1px solid #a7f3d0;
 border-radius:999px;
 font-size:13px;
-font-weight:bold;
+font-weight:700;
 ">
 ✓ Confirmed
 </div>
 
-<p style="margin:24px 0 10px;font-size:16px;">
+<p style="
+margin:24px 0 10px;
+font-size:16px;
+">
 Hello ${name},
 </p>
 
@@ -1498,8 +1330,8 @@ color:#4b5563;
 font-size:15px;
 line-height:1.7;
 ">
-Great news! Your appointment request has been accepted
-by the doctor. Your appointment is now confirmed.
+Great news! Your appointment request has been
+accepted by the doctor. Your appointment is now confirmed.
 </p>
 
 <div style="
@@ -1510,59 +1342,17 @@ border:1px solid #bbf7d0;
 border-radius:14px;
 ">
 
-<div style="
-font-size:13px;
+<h3 style="
+margin:0 0 16px;
 color:#166534;
-font-weight:bold;
-text-transform:uppercase;
-margin-bottom:16px;
 ">
 Confirmed Appointment
-</div>
+</h3>
 
-<table width="100%" cellpadding="0" cellspacing="0">
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Doctor
-</td>
-
-<td style="padding:10px 0;text-align:right;font-weight:bold;">
-${doctor}
-</td>
-</tr>
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Specialization
-</td>
-
-<td style="padding:10px 0;text-align:right;font-weight:bold;">
-${specialization}
-</td>
-</tr>
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Date
-</td>
-
-<td style="padding:10px 0;text-align:right;font-weight:bold;">
-${date}
-</td>
-</tr>
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Time
-</td>
-
-<td style="padding:10px 0;text-align:right;font-weight:bold;">
-${time}
-</td>
-</tr>
-
-</table>
+<p><strong>Doctor:</strong> ${doctor}</p>
+<p><strong>Specialization:</strong> ${spec}</p>
+<p><strong>Date:</strong> ${date}</p>
+<p><strong>Time:</strong> ${time}</p>
 
 </div>
 
@@ -1575,14 +1365,12 @@ color:#1e40af;
 font-size:14px;
 line-height:1.6;
 ">
-
 Please log in to your HealthCom account to view
 the complete appointment details and manage your consultation.
-
 </div>
 
 <p style="
-margin-top:25px;
+margin:25px 0 0;
 color:#6b7280;
 font-size:13px;
 ">
@@ -1598,13 +1386,12 @@ HealthCom Team
 <div style="
 padding:20px 30px;
 background:#f8fafc;
+border-top:1px solid #edf1f5;
 text-align:center;
 color:#9ca3af;
 font-size:12px;
 ">
-
 © ${new Date().getFullYear()} HealthCom. All rights reserved.
-
 </div>
 
 </div>
@@ -1613,7 +1400,13 @@ font-size:12px;
 
 </body>
 </html>
-`,
+`;
+
+  return sendEmail({
+    to: email,
+    subject: "HealthCom - Appointment Accepted",
+    text,
+    html,
   });
 }
 
@@ -1630,17 +1423,12 @@ async function sendPatientAppointmentRejectedEmail({
   appointmentTime,
 }) {
   const name = safeValue(firstName, "Patient");
-  const doctor = safeValue(doctorName);
-  const specialization = safeValue(specialty);
-  const date = safeValue(appointmentDate);
-  const time = safeValue(appointmentTime);
+  const doctor = safeValue(doctorName, "Doctor");
+  const spec = safeValue(specialty, "N/A");
+  const date = safeValue(appointmentDate, "N/A");
+  const time = safeValue(appointmentTime, "N/A");
 
-  return sendEmail({
-    to: email,
-
-    subject: "HealthCom - Appointment Request Rejected",
-
-    text: `Hello ${firstName || "Patient"},
+  const text = `Hello ${firstName || "Patient"},
 
 Unfortunately, your appointment request has been rejected by the doctor.
 
@@ -1649,9 +1437,9 @@ Specialization: ${specialty}
 Date: ${appointmentDate}
 Time: ${appointmentTime}
 
-You can search for another available doctor from your HealthCom account.`,
+You can search for another available doctor from your HealthCom account.`;
 
-    html: `
+  const html = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -1665,6 +1453,7 @@ margin:0;
 padding:0;
 background:#f3f7fb;
 font-family:Arial,Helvetica,sans-serif;
+color:#1f2937;
 ">
 
 <div style="padding:32px 14px;">
@@ -1688,7 +1477,7 @@ color:#ffffff;
 font-size:13px;
 letter-spacing:1.5px;
 text-transform:uppercase;
-font-weight:bold;
+font-weight:700;
 ">
 HealthCom
 </div>
@@ -1712,12 +1501,15 @@ color:#b91c1c;
 border:1px solid #fecaca;
 border-radius:999px;
 font-size:13px;
-font-weight:bold;
+font-weight:700;
 ">
 ✕ Request Rejected
 </div>
 
-<p style="margin:24px 0 10px;font-size:16px;">
+<p style="
+margin:24px 0 10px;
+font-size:16px;
+">
 Hello ${name},
 </p>
 
@@ -1726,8 +1518,8 @@ color:#4b5563;
 font-size:15px;
 line-height:1.7;
 ">
-Unfortunately, your appointment request could not be
-accepted by the doctor. The details of the request
+Unfortunately, your appointment request could not
+be accepted by the doctor. The details of the request
 are provided below.
 </p>
 
@@ -1739,59 +1531,17 @@ border:1px solid #fee2e2;
 border-radius:14px;
 ">
 
-<div style="
-font-size:13px;
+<h3 style="
+margin:0 0 16px;
 color:#991b1b;
-font-weight:bold;
-text-transform:uppercase;
-margin-bottom:16px;
 ">
 Request Details
-</div>
+</h3>
 
-<table width="100%" cellpadding="0" cellspacing="0">
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Doctor
-</td>
-
-<td style="padding:10px 0;text-align:right;font-weight:bold;">
-${doctor}
-</td>
-</tr>
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Specialization
-</td>
-
-<td style="padding:10px 0;text-align:right;font-weight:bold;">
-${specialization}
-</td>
-</tr>
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Date
-</td>
-
-<td style="padding:10px 0;text-align:right;font-weight:bold;">
-${date}
-</td>
-</tr>
-
-<tr>
-<td style="padding:10px 0;color:#6b7280;">
-Time
-</td>
-
-<td style="padding:10px 0;text-align:right;font-weight:bold;">
-${time}
-</td>
-</tr>
-
-</table>
+<p><strong>Doctor:</strong> ${doctor}</p>
+<p><strong>Specialization:</strong> ${spec}</p>
+<p><strong>Date:</strong> ${date}</p>
+<p><strong>Time:</strong> ${time}</p>
 
 </div>
 
@@ -1804,15 +1554,13 @@ color:#1e40af;
 font-size:14px;
 line-height:1.6;
 ">
-
 Don't worry. You can search for another available
 doctor and submit a new appointment request from
 your HealthCom account.
-
 </div>
 
 <p style="
-margin-top:25px;
+margin:25px 0 0;
 color:#6b7280;
 font-size:13px;
 ">
@@ -1827,13 +1575,12 @@ HealthCom Team
 <div style="
 padding:20px 30px;
 background:#f8fafc;
+border-top:1px solid #edf1f5;
 text-align:center;
 color:#9ca3af;
 font-size:12px;
 ">
-
 © ${new Date().getFullYear()} HealthCom. All rights reserved.
-
 </div>
 
 </div>
@@ -1842,7 +1589,13 @@ font-size:12px;
 
 </body>
 </html>
-`,
+`;
+
+  return sendEmail({
+    to: email,
+    subject: "HealthCom - Appointment Request Rejected",
+    text,
+    html,
   });
 }
 
@@ -1859,36 +1612,38 @@ async function sendSubscriptionSuccessEmail({
   endDate,
 }) {
   const name = safeValue(firstName, "Doctor");
-  const plan = safeValue(planName);
-  const price = safeValue(amount);
-  const transaction = safeValue(transactionId);
-  const validUntil = formatDate(endDate);
+  const plan = safeValue(planName, "Subscription Plan");
+  const paidAmount = safeValue(amount, "0");
+  const transaction = safeValue(transactionId, "N/A");
+  const validUntil = safeValue(formatDate(endDate), "N/A");
 
-  return sendEmail({
-    to: email,
-
-    subject: "HealthCom Subscription Activated",
-
-    text: `Hello ${firstName || "Doctor"},
+  const text = `Hello Dr. ${firstName || "Doctor"},
 
 Your HealthCom subscription payment has been successfully processed.
 
 Subscription Plan: ${planName}
 Amount Paid: ₹${amount}
 Transaction ID: ${transactionId}
-Valid Until: ${validUntil}
+Valid Until: ${formatDate(endDate)}
 
 Your plan is now active and ready to use.
 
-Thank you for choosing HealthCom.`,
+Thank you for choosing HealthCom.`;
 
-    html: `
+  const html = `
 <!DOCTYPE html>
 <html>
 <head>
+
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Subscription Activated</title>
+
+<meta
+name="viewport"
+content="width=device-width,initial-scale=1.0"
+>
+
+<title>HealthCom Subscription Activated</title>
+
 </head>
 
 <body style="
@@ -1899,7 +1654,10 @@ font-family:Arial,Helvetica,sans-serif;
 color:#172033;
 ">
 
-<div style="padding:45px 15px;">
+<div style="
+width:100%;
+padding:45px 15px;
+">
 
 <div style="
 width:100%;
@@ -1956,7 +1714,7 @@ font-size:15px;
 line-height:1.8;
 color:#667085;
 ">
-Hello ${name},
+Hello Dr. ${name},
 <br><br>
 
 Your HealthCom subscription payment has been
@@ -1994,68 +1752,63 @@ font-weight:700;
 Subscription Summary
 </div>
 
-<table width="100%" cellpadding="0" cellspacing="0">
-
-<tr>
-<td style="padding:17px 20px;color:#667085;">
-Subscription Plan
-</td>
-
-<td style="
+<div style="
 padding:17px 20px;
-text-align:right;
-font-weight:700;
+border-bottom:1px solid #eef1f5;
 ">
+<span style="color:#667085;">
+Subscription Plan
+</span>
+
+<strong style="float:right;">
 ${plan}
-</td>
-</tr>
+</strong>
+</div>
 
-<tr>
-<td style="padding:17px 20px;color:#667085;">
-Amount Paid
-</td>
-
-<td style="
+<div style="
 padding:17px 20px;
-text-align:right;
-font-weight:700;
+border-bottom:1px solid #eef1f5;
+">
+<span style="color:#667085;">
+Amount Paid
+</span>
+
+<strong style="
+float:right;
 color:#2563eb;
 font-size:17px;
 ">
-₹${price}
-</td>
-</tr>
+₹${paidAmount}
+</strong>
+</div>
 
-<tr>
-<td style="padding:17px 20px;color:#667085;">
-Transaction ID
-</td>
-
-<td style="
+<div style="
 padding:17px 20px;
-text-align:right;
-font-weight:700;
+border-bottom:1px solid #eef1f5;
+">
+<span style="color:#667085;">
+Transaction ID
+</span>
+
+<strong style="
+float:right;
 word-break:break-word;
 ">
 ${transaction}
-</td>
-</tr>
+</strong>
+</div>
 
-<tr>
-<td style="padding:17px 20px;color:#667085;">
-Valid Until
-</td>
-
-<td style="
+<div style="
 padding:17px 20px;
-text-align:right;
-font-weight:700;
 ">
-${validUntil}
-</td>
-</tr>
+<span style="color:#667085;">
+Valid Until
+</span>
 
-</table>
+<strong style="float:right;">
+${validUntil}
+</strong>
+</div>
 
 </div>
 
@@ -2067,30 +1820,24 @@ background:#f8fafc;
 border:1px solid #edf1f6;
 ">
 
-<p style="
-margin:0 0 7px;
-font-size:13px;
-font-weight:700;
-color:#344054;
-">
+<strong style="font-size:13px;">
 Your subscription is active
-</p>
+</strong>
 
 <p style="
-margin:0;
+margin:7px 0 0;
 font-size:13px;
 line-height:1.7;
 color:#667085;
 ">
 You can continue using HealthCom's healthcare
-tools and services according to your selected
-subscription plan.
+tools and services according to your selected plan.
 </p>
 
 </div>
 
 <p style="
-margin-top:26px;
+margin:26px 0 0;
 font-size:13px;
 line-height:1.7;
 color:#667085;
@@ -2113,7 +1860,6 @@ border-top:1px solid #edf1f6;
 margin-bottom:7px;
 font-size:14px;
 font-weight:700;
-color:#344054;
 ">
 HealthCom
 </div>
@@ -2137,7 +1883,13 @@ Better healthcare, connected.
 
 </body>
 </html>
-`,
+`;
+
+  return sendEmail({
+    to: email,
+    subject: "HealthCom Subscription Activated",
+    text,
+    html,
   });
 }
 
@@ -2152,15 +1904,10 @@ async function sendSubscriptionFailureEmail({
   transactionId,
 }) {
   const name = safeValue(firstName, "Doctor");
-  const plan = safeValue(planName);
-  const transaction = safeValue(transactionId);
+  const plan = safeValue(planName, "Subscription Plan");
+  const transaction = safeValue(transactionId, "N/A");
 
-  return sendEmail({
-    to: email,
-
-    subject: "HealthCom Payment Failed",
-
-    text: `Hello ${firstName || "Doctor"},
+  const text = `Hello Dr. ${firstName || "Doctor"},
 
 We couldn't complete your HealthCom subscription payment.
 
@@ -2168,17 +1915,24 @@ Subscription Plan: ${planName}
 Transaction ID: ${transactionId}
 Payment Status: Failed
 
-Please try the payment again using your preferred payment method.
+Your selected plan has not been activated from this transaction.
 
-If the amount was deducted, please allow time for the payment provider to reverse the transaction.`,
+Please try the payment again using your preferred payment method.`;
 
-    html: `
+  const html = `
 <!DOCTYPE html>
 <html>
 <head>
+
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Payment Failed</title>
+
+<meta
+name="viewport"
+content="width=device-width,initial-scale=1.0"
+>
+
+<title>HealthCom Payment Failed</title>
+
 </head>
 
 <body style="
@@ -2189,7 +1943,10 @@ font-family:Arial,Helvetica,sans-serif;
 color:#172033;
 ">
 
-<div style="padding:45px 15px;">
+<div style="
+width:100%;
+padding:45px 15px;
+">
 
 <div style="
 width:100%;
@@ -2246,7 +2003,7 @@ font-size:15px;
 line-height:1.8;
 color:#667085;
 ">
-Hello ${name},
+Hello Dr. ${name},
 <br><br>
 
 We couldn't complete your HealthCom subscription
@@ -2284,53 +2041,49 @@ font-weight:700;
 Payment Summary
 </div>
 
-<table width="100%" cellpadding="0" cellspacing="0">
-
-<tr>
-<td style="padding:17px 20px;color:#667085;">
-Subscription Plan
-</td>
-
-<td style="
+<div style="
 padding:17px 20px;
-text-align:right;
-font-weight:700;
+border-bottom:1px solid #eef1f5;
 ">
+<span style="color:#667085;">
+Subscription Plan
+</span>
+
+<strong style="float:right;">
 ${plan}
-</td>
-</tr>
+</strong>
+</div>
 
-<tr>
-<td style="padding:17px 20px;color:#667085;">
-Transaction ID
-</td>
-
-<td style="
+<div style="
 padding:17px 20px;
-text-align:right;
-font-weight:700;
+border-bottom:1px solid #eef1f5;
+">
+<span style="color:#667085;">
+Transaction ID
+</span>
+
+<strong style="
+float:right;
 word-break:break-word;
 ">
 ${transaction}
-</td>
-</tr>
+</strong>
+</div>
 
-<tr>
-<td style="padding:17px 20px;color:#667085;">
-Payment Status
-</td>
-
-<td style="
+<div style="
 padding:17px 20px;
-text-align:right;
-font-weight:700;
+">
+<span style="color:#667085;">
+Payment Status
+</span>
+
+<strong style="
+float:right;
 color:#dc2626;
 ">
 Failed
-</td>
-</tr>
-
-</table>
+</strong>
+</div>
 
 </div>
 
@@ -2342,17 +2095,15 @@ background:#fff8f8;
 border:1px solid #fee2e2;
 ">
 
-<p style="
-margin:0 0 7px;
+<strong style="
 font-size:13px;
-font-weight:700;
 color:#991b1b;
 ">
 Important payment information
-</p>
+</strong>
 
 <p style="
-margin:0;
+margin:7px 0 0;
 font-size:13px;
 line-height:1.7;
 color:#667085;
@@ -2373,17 +2124,15 @@ background:#f8fafc;
 border:1px solid #edf1f6;
 ">
 
-<p style="
-margin:0 0 7px;
+<strong style="
 font-size:13px;
-font-weight:700;
 color:#344054;
 ">
 What should you do?
-</p>
+</strong>
 
 <p style="
-margin:0;
+margin:7px 0 0;
 font-size:13px;
 line-height:1.7;
 color:#667085;
@@ -2396,14 +2145,14 @@ your payment details or contact HealthCom support.
 </div>
 
 <p style="
-margin-top:26px;
+margin:26px 0 0;
 font-size:13px;
 line-height:1.7;
 color:#667085;
 ">
 Please keep your transaction ID for reference.
-It can help our support team quickly locate your
-payment attempt.
+It can help our support team quickly locate
+your payment attempt.
 </p>
 
 </div>
@@ -2419,7 +2168,6 @@ border-top:1px solid #edf1f6;
 margin-bottom:7px;
 font-size:14px;
 font-weight:700;
-color:#344054;
 ">
 HealthCom
 </div>
@@ -2443,7 +2191,13 @@ The HealthCom team is here to assist you.
 
 </body>
 </html>
-`,
+`;
+
+  return sendEmail({
+    to: email,
+    subject: "HealthCom Payment Failed",
+    text,
+    html,
   });
 }
 
