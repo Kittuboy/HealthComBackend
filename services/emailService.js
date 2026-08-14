@@ -1,26 +1,41 @@
 const nodemailer = require("nodemailer");
 
+
+
+// =========================================================
+// BREVO SMTP TRANSPORTER
+// =========================================================
+
 const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
+  host: "smtp-relay.brevo.com",
   port: 587,
   secure: false,
 
   auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_APP_PASSWORD,
+    user: process.env.BREVO_SMTP_USER,
+    pass: process.env.BREVO_SMTP_KEY,
   },
 
-  tls: {
-    rejectUnauthorized: true,
-  },
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 20000,
 });
+
+// =========================================================
+// VERIFY EMAIL CONFIGURATION
+// =========================================================
 
 transporter.verify((error, success) => {
   if (error) {
-    console.error("Email service connection failed:", error);
-  } else {
-    console.log("Email service connected successfully");
+    console.error("========== BREVO SMTP ERROR ==========");
+    console.error(error);
+    console.error("======================================");
+    return;
   }
+
+  console.log("========== BREVO SMTP CONNECTED ==========");
+  console.log(success);
+  console.log("==========================================");
 });
 
 // =========================================================
@@ -33,7 +48,7 @@ async function sendVerificationOtp({
   otp,
 }) {
   const mailOptions = {
-    from: `"HealthCom" <${process.env.EMAIL_USER}>`,
+    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
     to: email,
     subject: "Verify your HealthCom account",
 
@@ -101,7 +116,7 @@ async function sendLoginOtp({
   otp,
 }) {
   const mailOptions = {
-    from: `"HealthCom" <${process.env.EMAIL_USER}>`,
+    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
     to: email,
     subject: "HealthCom Login OTP",
 
@@ -169,7 +184,7 @@ async function sendPasswordResetOtp({
   otp,
 }) {
   const mailOptions = {
-    from: `"HealthCom" <${process.env.EMAIL_USER}>`,
+    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
     to: email,
     subject: "HealthCom Password Reset OTP",
 
@@ -240,7 +255,7 @@ async function sendPatientAppointmentEmail({
   appointmentTime,
 }) {
   const mailOptions = {
-    from: `"HealthCom" <${process.env.EMAIL_USER}>`,
+    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
     to: email,
 
     subject:
@@ -584,7 +599,7 @@ async function sendDoctorAppointmentEmail({
   appointmentTime,
 }) {
   const mailOptions = {
-    from: `"HealthCom" <${process.env.EMAIL_USER}>`,
+    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
     to: email,
 
     subject:
@@ -973,7 +988,7 @@ const sendPatientAppointmentCancellationEmail = async ({
   appointmentTime,
 }) => {
   const mailOptions = {
-    from: `"HealthCom" <${process.env.EMAIL_USER}>`,
+    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
     to: email,
 
     subject:
@@ -1300,7 +1315,7 @@ const sendPatientAppointmentAcceptedEmail = async ({
   appointmentTime,
 }) => {
   const mailOptions = {
-    from: `"HealthCom" <${process.env.EMAIL_USER}>`,
+    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
     to: email,
 
     subject:
@@ -1630,7 +1645,7 @@ const sendPatientAppointmentRejectedEmail = async ({
   appointmentTime,
 }) => {
   const mailOptions = {
-    from: `"HealthCom" <${process.env.EMAIL_USER}>`,
+    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
     to: email,
 
     subject:
@@ -1956,19 +1971,19 @@ You can search for another available doctor from your HealthCom account.`,
 // ======================================================
 
 const sendSubscriptionSuccessEmail = async ({
-    email,
-    firstName,
-    planName,
-    amount,
-    transactionId,
-    endDate,
+  email,
+  firstName,
+  planName,
+  amount,
+  transactionId,
+  endDate,
 }) => {
 
-    await transporter.sendMail({
-        from: process.env.EMAIL_FROM,
-        to: email,
-        subject: "HealthCom Subscription Activated",
-        html: `
+  await transporter.sendMail({
+    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
+    to: email,
+    subject: "HealthCom Subscription Activated",
+    html: `
 <!DOCTYPE html>
 <html>
 <head>
@@ -2336,7 +2351,7 @@ const sendSubscriptionSuccessEmail = async ({
 </body>
 </html>
         `,
-    });
+  });
 
 };
 
@@ -2346,17 +2361,17 @@ const sendSubscriptionSuccessEmail = async ({
 // ======================================================
 
 const sendSubscriptionFailureEmail = async ({
-    email,
-    firstName,
-    planName,
-    transactionId,
+  email,
+  firstName,
+  planName,
+  transactionId,
 }) => {
 
-    await transporter.sendMail({
-        from: process.env.EMAIL_FROM,
-        to: email,
-        subject: "HealthCom Payment Failed",
-        html: `
+  await transporter.sendMail({
+    from: `"HealthCom" <${process.env.EMAIL_FROM}>`,
+    to: email,
+    subject: "HealthCom Payment Failed",
+    html: `
 <!DOCTYPE html>
 <html>
 <head>
@@ -2751,7 +2766,7 @@ const sendSubscriptionFailureEmail = async ({
 </body>
 </html>
         `,
-    });
+  });
 
 };
 
