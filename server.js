@@ -39,10 +39,7 @@ const port =
 app.use(cookieParser());
 
 const allowedOrigins = [
-    "http://localhost:5173",
-    "http://localhost:5173/",
-    "https://sage-melomakarona-a9724e.netlify.app",
-    "https://sage-melomakarona-a9724e.netlify.app/"
+    "https://sage-melomakarona-a9724e.netlify.app"
 ];
 
 app.use(
