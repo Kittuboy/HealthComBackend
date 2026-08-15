@@ -38,14 +38,50 @@ const port =
 
 app.use(cookieParser());
 
-app.use(
-  cors({
-    origin:
-      process.env.CLIENT_URL ||
-      'http://localhost:5173',
+const allowedOrigins = [
+    "http://localhost:5173",
+    "http://localhost:5173/",
+    "https://sage-melomakarona-a9724e.netlify.app",
+    "https://sage-melomakarona-a9724e.netlify.app/"
+];
 
-    credentials: true,
-  }),
+app.use(
+    cors({
+        origin: function (origin, callback) {
+
+            // Postman / server-to-server requests
+            if (!origin) {
+                return callback(null, true);
+            }
+
+            if (allowedOrigins.includes(origin)) {
+                return callback(null, true);
+            }
+
+            console.log("❌ CORS blocked:", origin);
+
+            return callback(
+                new Error("Not allowed by CORS")
+            );
+        },
+
+        credentials: true,
+
+        methods: [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "OPTIONS"
+        ],
+
+        allowedHeaders: [
+            "Content-Type",
+            "Authorization",
+            "X-Requested-With"
+        ]
+    })
 );
 
 app.use(
